@@ -54,7 +54,9 @@ class WeChat:
         self.path = path
         
         # 用于复制内容到剪切板
-        self.app = QApplication([])
+        self.app = QApplication.instance()
+        if self.app is None:
+            self.app = QApplication([])
         
         # 自动回复的联系人列表
         self.auto_reply_contacts = []
@@ -205,6 +207,16 @@ class WeChat:
 
         except Exception:
             return False
+
+    def send_text_message(self, name: str, text: str, search_user: bool = True) -> None:
+        """不校验聊天记录，直接完成文本发送。"""
+        if search_user:
+            self.get_contact(name)
+
+        if text is not None:
+            self.paste_text(text)
+
+        self.press_enter()
 
     # 搜索指定用户名的联系人发送文件
     def send_file(self, name: str, path: str, search_user: bool = True) -> None:

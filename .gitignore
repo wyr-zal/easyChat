@@ -1,0 +1,44 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+
+# Distribution / packaging
+dist/
+build/
+*.egg-info/
+*.egg
+*.spec
+
+# Virtual environments
+venv/
+.venv/
+env/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
+Thumbs.db
+Desktop.ini
+.DS_Store
+
+# Project
+CONTEXT.md
+wechat_config.json
+excel_sender_config.json
+contacts_*.csv
+filtered_wechat_ids*.txt
+@AutomationLog.txt
+nul
+
+# AI artifacts
+.agent/
+.claude/
+
+# Local captures
+Snipaste_*.png

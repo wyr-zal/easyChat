@@ -215,6 +215,50 @@ class MultiInputDialog(QDialog):
         return [i.text() for i in self.inputs]
 
 
+class FileDropLineEdit(QLineEdit):
+    """支持从资源管理器拖入文件路径的输入框"""
+
+    def __init__(self, allow_multiple: bool = False, suffixes: list[str] | None = None, parent=None) -> None:
+        super().__init__(parent)
+        self.allow_multiple = allow_multiple
+        self.suffixes = [suffix.lower() for suffix in (suffixes or [])]
+        self.setAcceptDrops(True)
+
+    def _extract_paths(self, mime_data: QMimeData) -> list[str]:
+        if not mime_data.hasUrls():
+            return []
+
+        paths = []
+        for url in mime_data.urls():
+            if url.isLocalFile():
+                path = url.toLocalFile()
+                if self.suffixes:
+                    lower_path = path.lower()
+                    if not any(lower_path.endswith(suffix) for suffix in self.suffixes):
+                        continue
+                paths.append(path)
+        return paths
+
+    def dragEnterEvent(self, event) -> None:
+        paths = self._extract_paths(event.mimeData())
+        if paths:
+            event.acceptProposedAction()
+        else:
+            event.ignore()
+
+    def dropEvent(self, event) -> None:
+        paths = self._extract_paths(event.mimeData())
+        if not paths:
+            event.ignore()
+            return
+
+        if self.allow_multiple:
+            self.setText(";".join(paths))
+        else:
+            self.setText(paths[0])
+        event.acceptProposedAction()
+
+
 class FileDialog(QDialog):
     """
     文件选择框
@@ -232,7 +276,8 @@ class FileDialog(QDialog):
         # 选择文件
         choose_layout = QHBoxLayout()
 
-        path = QLineEdit(self)
+        path = FileDropLineEdit(allow_multiple=True, parent=self)
+        path.setPlaceholderText("可点击右侧选择文件，或直接把文件拖到这里")
         choose_layout.addWidget(path)
         self.inputs.append(path)
 
@@ -267,6 +312,87 @@ class FileDialog(QDialog):
     def get_input(self):
         """获取用户输入"""
         return [i.text() for i in self.inputs]
+
+
+class ContactFilterDialog(QDialog):
+    """联系人 CSV 正则筛选对话框"""
+
+    def __init__(
+        self,
+        csv_path: str = "",
+        pattern: str = "",
+        fields: str = "",
+        contact_type: str = "好友",
+        ignore_case: bool = False,
+        parent=None,
+    ) -> None:
+        super().__init__(parent)
+        self.setWindowTitle("从CSV按正则导入")
+        self.resize(760, 360)
+        self.setMinimumSize(720, 340)
+        self.setSizeGripEnabled(True)
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(16, 16, 16, 16)
+        layout.setSpacing(10)
+
+        layout.addWidget(QLabel("联系人CSV文件（支持拖拽）"))
+        csv_layout = QHBoxLayout()
+        self.csv_input = FileDropLineEdit(suffixes=[".csv"], parent=self)
+        self.csv_input.setText(csv_path)
+        self.csv_input.setPlaceholderText("可点击右侧选择CSV，或直接把CSV文件拖到这里")
+        self.csv_input.setMinimumWidth(460)
+        csv_layout.addWidget(self.csv_input)
+
+        choose_button = QPushButton("选择CSV")
+        choose_button.setMinimumWidth(120)
+        choose_button.clicked.connect(self.select_csv)
+        csv_layout.addWidget(choose_button)
+        layout.addLayout(csv_layout)
+
+        layout.addWidget(QLabel("匹配正则表达式"))
+        self.pattern_input = QLineEdit(self)
+        self.pattern_input.setText(pattern)
+        layout.addWidget(self.pattern_input)
+
+        layout.addWidget(QLabel("参与匹配的字段（英文逗号分隔）"))
+        self.fields_input = QLineEdit(self)
+        self.fields_input.setText(fields)
+        layout.addWidget(self.fields_input)
+
+        layout.addWidget(QLabel("联系人类型（默认好友，留空不过滤）"))
+        self.contact_type_input = QLineEdit(self)
+        self.contact_type_input.setText(contact_type)
+        layout.addWidget(self.contact_type_input)
+
+        self.ignore_case_checkbox = QCheckBox("忽略大小写")
+        self.ignore_case_checkbox.setChecked(ignore_case)
+        layout.addWidget(self.ignore_case_checkbox)
+
+        button_layout = QHBoxLayout()
+        ok_button = QPushButton("确认")
+        ok_button.setMinimumWidth(120)
+        ok_button.clicked.connect(self.accept)
+        cancel_button = QPushButton("取消")
+        cancel_button.setMinimumWidth(120)
+        cancel_button.clicked.connect(self.reject)
+        button_layout.addWidget(ok_button)
+        button_layout.addWidget(cancel_button)
+        layout.addLayout(button_layout)
+
+    def select_csv(self):
+        path = QFileDialog.getOpenFileName(self, "选择联系人CSV", "", "CSV文件(*.csv)")[0]
+        if path:
+            self.csv_input.setText(path)
+
+    def get_input(self) -> dict:
+        return {
+            "csv_path": self.csv_input.text().strip(),
+            "pattern": self.pattern_input.text().strip(),
+            "fields": self.fields_input.text().strip(),
+            "contact_type": self.contact_type_input.text().strip(),
+            "ignore_case": self.ignore_case_checkbox.isChecked(),
+        }
 
 
 class MySpinBox(QWidget):

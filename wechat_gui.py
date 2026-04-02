@@ -3,11 +3,19 @@ import time
 import os
 import itertools
 import json
+from pathlib import Path
 
 from PyQt5.QtWidgets import *
 from PyQt5.QtCore import *
 from PyQt5.QtGui import *
 # from ui_auto_wechat import WeChat
+from csv_filter_contacts import (
+    DEFAULT_FIELDS,
+    export_wechat_ids,
+    filter_contacts_from_csv,
+    format_preview_rows,
+    normalize_fields,
+)
 from ui_auto_wechat import WeChat
 from module import *
 from wechat_locale import WeChatLocale
@@ -37,6 +45,8 @@ class WechatGUI(QWidget):
                 "messages": [],
                 "schedules": [],
             }
+
+        if self.ensure_config_defaults():
             self.save_config()
 
         self.wechat = WeChat(
@@ -57,6 +67,39 @@ class WechatGUI(QWidget):
         
         # 自动打开提示
         self.show_wechat_open_notice()
+
+    def ensure_config_defaults(self):
+        changed = False
+
+        settings = self.config.setdefault("settings", {})
+        for key, value in {
+            "wechat_path": "",
+            "send_interval": 0,
+            "system_version": "new",
+            "language": "zh-CN",
+        }.items():
+            if key not in settings:
+                settings[key] = value
+                changed = True
+
+        for key in ("contacts", "messages", "schedules"):
+            if key not in self.config:
+                self.config[key] = []
+                changed = True
+
+        contact_filter = self.config.setdefault("contact_filter", {})
+        for key, value in {
+            "csv_path": "",
+            "pattern": "",
+            "fields": ",".join(DEFAULT_FIELDS),
+            "contact_type": "好友",
+            "ignore_case": False,
+        }.items():
+            if key not in contact_filter:
+                contact_filter[key] = value
+                changed = True
+
+        return changed
 
     # 显示微信打开方式变更提示
     def show_wechat_open_notice(self):
@@ -93,6 +136,19 @@ class WechatGUI(QWidget):
 
             self.config["contacts"] = contacts
             self.save_config()
+
+        def refresh_contact_numbers():
+            for i in range(self.contacts_view.count()):
+                item_text = self.contacts_view.item(i).text()
+                name = item_text.split(':', 1)[1] if ':' in item_text else item_text
+                self.contacts_view.item(i).setText(f"{i+1}:{name}")
+
+        def get_existing_contact_names():
+            names = []
+            for i in range(self.contacts_view.count()):
+                item_text = self.contacts_view.item(i).text()
+                names.append(item_text.split(':', 1)[1] if ':' in item_text else item_text)
+            return names
 
         # 读取联系人列表并保存
         def save_contacts():
@@ -132,6 +188,94 @@ class WechatGUI(QWidget):
                 update_contacts()
                 QMessageBox.information(self, "加载成功", "联系人列表加载成功！")
 
+        def import_contacts_from_csv():
+            filter_config = self.config["contact_filter"]
+            dialog = ContactFilterDialog(
+                csv_path=filter_config["csv_path"],
+                pattern=filter_config["pattern"],
+                fields=filter_config["fields"],
+                contact_type=filter_config["contact_type"],
+                ignore_case=filter_config["ignore_case"],
+                parent=self,
+            )
+
+            if dialog.exec_() != QDialog.Accepted:
+                return
+
+            filter_data = dialog.get_input()
+            if filter_data["csv_path"] == "":
+                QMessageBox.warning(self, "输入错误", "请选择联系人CSV文件！")
+                return
+            if filter_data["pattern"] == "":
+                QMessageBox.warning(self, "输入错误", "请输入匹配正则表达式！")
+                return
+
+            self.config["contact_filter"] = filter_data
+            self.save_config()
+
+            try:
+                fields = normalize_fields(filter_data["fields"])
+                matched_rows = filter_contacts_from_csv(
+                    csv_path=Path(filter_data["csv_path"]),
+                    pattern_text=filter_data["pattern"],
+                    fields=fields,
+                    contact_type=filter_data["contact_type"],
+                    ignore_case=filter_data["ignore_case"],
+                )
+            except Exception as e:
+                QMessageBox.warning(self, "筛选失败", f"筛选联系人失败！\n错误信息：{e}")
+                return
+
+            if not matched_rows:
+                QMessageBox.information(self, "筛选结果", "未匹配到任何联系人。")
+                return
+
+            preview_lines = format_preview_rows(matched_rows, 10)
+            preview_text = "\n".join(preview_lines)
+            confirm_box = QMessageBox(self)
+            confirm_box.setIcon(QMessageBox.Information)
+            confirm_box.setWindowTitle("确认导入")
+            confirm_box.setText(
+                f"共匹配到 {len(matched_rows)} 个联系人。\n\n预览前 {min(10, len(matched_rows))} 条：\n{preview_text}"
+            )
+            confirm_box.setInformativeText("选择“覆盖导入”会清空当前待发送用户列表；选择“追加导入”会保留现有名单并自动跳过重复微信号。")
+            replace_button = confirm_box.addButton("覆盖导入", QMessageBox.AcceptRole)
+            append_button = confirm_box.addButton("追加导入", QMessageBox.ActionRole)
+            confirm_box.addButton("取消", QMessageBox.RejectRole)
+            confirm_box.exec_()
+
+            clicked_button = confirm_box.clickedButton()
+            if clicked_button not in (replace_button, append_button):
+                return
+
+            existing_names = set()
+            if clicked_button is replace_button:
+                self.contacts_view.clear()
+            else:
+                existing_names = set(get_existing_contact_names())
+
+            added_count = 0
+            for row in matched_rows:
+                wechat_id = (row.get("微信号") or "").strip()
+                if wechat_id == "" or wechat_id in existing_names:
+                    continue
+                self.contacts_view.addItem(wechat_id)
+                existing_names.add(wechat_id)
+                added_count += 1
+
+            refresh_contact_numbers()
+            update_contacts()
+
+            timestamp = time.strftime("%Y-%m-%dT%H-%M-%S")
+            export_path = Path("build") / f"filtered_wechat_ids_{timestamp}.txt"
+            export_wechat_ids(export_path, matched_rows)
+
+            QMessageBox.information(
+                self,
+                "导入成功",
+                f"已导入 {added_count} 个联系人。\n匹配结果已保存到：\n{export_path.resolve()}",
+            )
+
         # 增加用户列表信息
         def add_contact():
             name_list, ok = QInputDialog.getText(self, '添加用户', '输入添加的用户名(可添加多个人名，用英文逗号,分隔):')
@@ -151,8 +295,7 @@ class WechatGUI(QWidget):
                     self.contacts_view.takeItem(i)
 
             # 为所有剩余的用户重新编号
-            for i in range(self.contacts_view.count()):
-                self.contacts_view.item(i).setText(f"{i+1}:{self.contacts_view.item(i).text().split(':')[1]}")
+            refresh_contact_numbers()
 
             update_contacts()
 
@@ -187,6 +330,9 @@ class WechatGUI(QWidget):
         load_btn = QPushButton("加载用户txt文件")
         load_btn.clicked.connect(load_contacts)
 
+        import_csv_btn = QPushButton("从CSV按正则导入")
+        import_csv_btn.clicked.connect(import_contacts_from_csv)
+
         add_btn = QPushButton("添加用户")
         add_btn.clicked.connect(add_contact)
 
@@ -197,6 +343,7 @@ class WechatGUI(QWidget):
         vbox.addWidget(save_btn)
         vbox.addWidget(save_group_btn)
         vbox.addWidget(load_btn)
+        vbox.addWidget(import_csv_btn)
         vbox.addWidget(add_btn)
         vbox.addWidget(del_btn)
         hbox.addLayout(vbox)
