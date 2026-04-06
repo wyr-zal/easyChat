@@ -80,7 +80,6 @@ class ExcelSenderGUI(QWidget):
         self.filtered_records: list[dict[str, str]] = []
         self.columns: list[str] = []
         self.send_thread: PersonalizedSendThread | None = None
-        self.preview_limit = 10
         self.records_loaded = False
         self.loaded_excel_path = ""
         self.active_source_mode = SOURCE_MODE_FILE
@@ -181,8 +180,8 @@ class ExcelSenderGUI(QWidget):
 
     def init_ui(self) -> None:
         self.setWindowTitle("EasyChat Excel 个性化群发")
-        self.resize(1120, 860)
-        self.setMinimumSize(960, 720)
+        self.resize(1344, 860)
+        self.setMinimumSize(1152, 720)
         self.apply_font_scaling()
 
         root_layout = QVBoxLayout(self)
@@ -283,7 +282,7 @@ class ExcelSenderGUI(QWidget):
         layout.addWidget(helper_label)
         layout.addLayout(self.build_action_bar())
 
-        detail_label = QLabel("“刷新预览”会渲染前 10 条消息；本地库模式下，只有已导入发送计划的任务快照才允许编辑单条目标和消息。定时发送会冻结当前快照。")
+        detail_label = QLabel("“刷新发送计划”会展示当前即将发送的全部联系人/群聊和消息内容；本地库模式下，只有已导入发送计划的任务快照才允许编辑单条目标和消息。定时发送会冻结当前快照。")
         detail_label.setWordWrap(True)
         detail_label.setStyleSheet("color:#555;")
         layout.addWidget(detail_label)
@@ -475,12 +474,6 @@ class ExcelSenderGUI(QWidget):
         path_layout.addWidget(import_button)
         self.import_local_button = import_button
 
-        load_local_button = QPushButton("查看本地库")
-        load_local_button.setMinimumWidth(120)
-        load_local_button.clicked.connect(self.open_local_store_page)
-        path_layout.addWidget(load_local_button)
-        self.load_local_button = load_local_button
-
         layout.addLayout(path_layout)
 
         self.data_info_label = QLabel("尚未读取 Excel 数据。")
@@ -602,7 +595,7 @@ class ExcelSenderGUI(QWidget):
         self.interval_spin.setRange(0, 3600)
         self.interval_spin.valueChanged.connect(self.on_interval_changed)
 
-        self.preview_button = QPushButton("刷新预览")
+        self.preview_button = QPushButton("刷新发送计划")
         self.preview_button.clicked.connect(self.show_preview_results)
 
         self.confirm_task_button = QPushButton("从本地库导入计划")
@@ -629,7 +622,7 @@ class ExcelSenderGUI(QWidget):
         return layout
 
     def build_preview_group(self) -> QGroupBox:
-        group = QGroupBox("发送预览（前 10 条）")
+        group = QGroupBox("发送计划")
         layout = QVBoxLayout(group)
 
         self.preview_table = QTableWidget(0, 4, self)
@@ -744,7 +737,7 @@ class ExcelSenderGUI(QWidget):
         summaries = self.local_store.get_current_import_summaries()
         if not summaries:
             self.local_db_status_label.setStyleSheet("color:#555;")
-            self.local_db_status_label.setText("本地库尚未导入数据，可点击“查看本地库”页查看详情。")
+            self.local_db_status_label.setText("本地库尚未导入数据，可前往“本地库数据”页查看详情。")
             return
 
         parts = [
@@ -1429,7 +1422,7 @@ class ExcelSenderGUI(QWidget):
         if not hasattr(self, "preview_table"):
             return
         first_header = LOCAL_DB_HEADER_TITLE if self.is_local_db_mode() else self.get_send_target_column()
-        self.preview_table.setHorizontalHeaderLabels([first_header, "显示名称", "预览消息", "操作"])
+        self.preview_table.setHorizontalHeaderLabels([first_header, "显示名称", "发送消息", "操作"])
 
     def update_send_target_column_status(self) -> None:
         if not hasattr(self, "send_target_status_label"):
@@ -1588,11 +1581,11 @@ class ExcelSenderGUI(QWidget):
             self._updating_preview_table = False
             return
 
-        preview_records = self.records[: self.preview_limit]
-        self.preview_table.setRowCount(len(preview_records))
+        plan_records = self.records
+        self.preview_table.setRowCount(len(plan_records))
         allow_edit = self.can_edit_preview_rows()
 
-        for row_index, row in enumerate(preview_records):
+        for row_index, row in enumerate(plan_records):
             target_value = self.get_send_target_value(row)
             display_name = self.get_display_name(row)
             preview_message = self.get_preview_message(row)
@@ -1978,7 +1971,6 @@ class ExcelSenderGUI(QWidget):
         self.confirm_task_button.setEnabled(False)
         self.load_excel_button.setEnabled(False)
         self.import_local_button.setEnabled(False)
-        self.load_local_button.setEnabled(False)
         self.preview_table.setEnabled(False)
         self.send_status_label.setText("发送中...")
         self.main_tabs.setCurrentWidget(self.execution_page)
@@ -2052,7 +2044,6 @@ class ExcelSenderGUI(QWidget):
         self.preview_button.setEnabled(True)
         self.load_excel_button.setEnabled(True)
         self.import_local_button.setEnabled(True)
-        self.load_local_button.setEnabled(True)
         self.preview_table.setEnabled(True)
         self.send_thread = None
         self.active_scheduled_job = None
@@ -2083,7 +2074,7 @@ class ExcelSenderGUI(QWidget):
                 child_layout.activate()
             widget.updateGeometry()
 
-        width = max(self.width(), self.minimumWidth(), 1120)
+        width = max(self.width(), self.minimumWidth(), 1344)
         height = max(self.height(), self.minimumHeight(), 860)
         self.resize(width + 1, height + 1)
         self.resize(width, height)
