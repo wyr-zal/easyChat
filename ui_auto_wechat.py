@@ -30,6 +30,21 @@ def click(element):
     auto.Click(x, y)
 
 
+# 点击控件内部指定相对位置，默认点中部；可用于避开控件上半区按钮
+def click_inside(element, x_ratio=0.5, y_ratio=0.5, y_offset=0):
+    rect = getattr(element, "BoundingRectangle", None)
+    if rect is not None and not rect.isempty():
+        width = max(1, rect.width())
+        height = max(1, rect.height())
+        x = int(rect.left + (width - 1) * x_ratio)
+        y = int(rect.top + (height - 1) * y_ratio + y_offset)
+        auto.Click(x, y)
+        return
+
+    x, y = element.GetPosition()
+    auto.Click(x, y + y_offset)
+
+
 # 鼠标右键点击控件
 def right_click(element):
     x, y = element.GetPosition()
@@ -146,16 +161,14 @@ class WeChat:
                 click(item)
                 break
 
-        # 点击发送内容输入框来获取输入焦点
+        # 点击消息输入区下半部分获取焦点，避开上方工具按钮
         tool_bar = auto.ToolBarControl(Depth=15)
         move(tool_bar)
-        click(tool_bar)
+        click_inside(tool_bar, y_ratio=0.78)
     
-    # 鼠标移动到发送按钮处点击发送消息
+    # 对当前输入框发送回车键，触发微信发送消息
     def press_enter(self):
-        # 获取发送按钮
-        send_button = auto.ButtonControl(Depth=15, Name=self.lc.send)
-        click(send_button)
+        auto.SendKeys("{Enter}")
 
     def paste_text(self, text: str) -> None:
         """
