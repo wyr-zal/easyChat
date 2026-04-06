@@ -315,84 +315,259 @@ class FileDialog(QDialog):
 
 
 class ContactFilterDialog(QDialog):
-    """联系人 CSV 正则筛选对话框"""
+    """联系人 CSV 筛选对话框（支持多CSV、通配符、分类型搜索字段配置）"""
+
+    SEARCH_FIELDS = ["备注", "显示名称", "昵称", "微信号", "用户名"]
 
     def __init__(
         self,
-        csv_path: str = "",
+        csv_paths: list = None,
         pattern: str = "",
         fields: str = "",
-        contact_type: str = "好友",
+        contact_type: str = "",
         ignore_case: bool = False,
+        friend_search_field: str = "备注",
+        group_search_field: str = "显示名称",
         parent=None,
     ) -> None:
         super().__init__(parent)
-        self.setWindowTitle("从CSV按正则导入")
-        self.resize(760, 360)
-        self.setMinimumSize(720, 340)
+        self.setWindowTitle("从CSV导入联系人")
+        self.resize(800, 480)
+        self.setMinimumSize(720, 440)
         self.setSizeGripEnabled(True)
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(16, 16, 16, 16)
-        layout.setSpacing(10)
+        layout.setSpacing(8)
 
-        layout.addWidget(QLabel("联系人CSV文件（支持拖拽）"))
+        # ── CSV 文件选择（多文件）──
+        layout.addWidget(QLabel("联系人CSV文件（可选多个，支持拖拽；用分号隔开）"))
         csv_layout = QHBoxLayout()
-        self.csv_input = FileDropLineEdit(suffixes=[".csv"], parent=self)
-        self.csv_input.setText(csv_path)
-        self.csv_input.setPlaceholderText("可点击右侧选择CSV，或直接把CSV文件拖到这里")
-        self.csv_input.setMinimumWidth(460)
+        self.csv_input = FileDropLineEdit(allow_multiple=True, suffixes=[".csv"], parent=self)
+        self.csv_input.setText(";".join(csv_paths) if csv_paths else "")
+        self.csv_input.setPlaceholderText("可点击右侧选择CSV，或直接把文件拖到这里（多文件用分号隔开）")
         csv_layout.addWidget(self.csv_input)
-
-        choose_button = QPushButton("选择CSV")
-        choose_button.setMinimumWidth(120)
-        choose_button.clicked.connect(self.select_csv)
-        csv_layout.addWidget(choose_button)
+        choose_btn = QPushButton("选择CSV")
+        choose_btn.setMinimumWidth(100)
+        choose_btn.clicked.connect(self.select_csv)
+        csv_layout.addWidget(choose_btn)
         layout.addLayout(csv_layout)
 
-        layout.addWidget(QLabel("匹配正则表达式"))
+        # ── 筛选模式输入 ──
+        layout.addWidget(QLabel("筛选模式（支持通配符 * ? 或正则，留空=全选）"))
         self.pattern_input = QLineEdit(self)
         self.pattern_input.setText(pattern)
+        self.pattern_input.setPlaceholderText("例：*陈* 或 ^张.* 或留空全选")
         layout.addWidget(self.pattern_input)
 
-        layout.addWidget(QLabel("参与匹配的字段（英文逗号分隔）"))
+        # ── 参与匹配的字段 ──
+        layout.addWidget(QLabel("筛选时参与匹配的字段（英文逗号分隔，默认：显示名称,备注,昵称）"))
         self.fields_input = QLineEdit(self)
         self.fields_input.setText(fields)
+        self.fields_input.setPlaceholderText("显示名称,备注,昵称")
         layout.addWidget(self.fields_input)
 
-        layout.addWidget(QLabel("联系人类型（默认好友，留空不过滤）"))
+        # ── 联系人类型 ──
+        layout.addWidget(QLabel("联系人类型过滤（好友 / 群聊 / 留空=全部）"))
         self.contact_type_input = QLineEdit(self)
         self.contact_type_input.setText(contact_type)
+        self.contact_type_input.setPlaceholderText("留空则好友和群聊都导入")
         layout.addWidget(self.contact_type_input)
 
+        # ── 分类型搜索识别字段 ──
+        search_field_layout = QGridLayout()
+        search_field_layout.setHorizontalSpacing(16)
+
+        search_field_layout.addWidget(QLabel("好友 微信搜索框用的字段："), 0, 0)
+        self.friend_search_combo = QComboBox(self)
+        self.friend_search_combo.addItems(self.SEARCH_FIELDS)
+        idx = self.friend_search_combo.findText(friend_search_field)
+        self.friend_search_combo.setCurrentIndex(max(idx, 0))
+        search_field_layout.addWidget(self.friend_search_combo, 0, 1)
+
+        search_field_layout.addWidget(QLabel("群聊 微信搜索框用的字段："), 0, 2)
+        self.group_search_combo = QComboBox(self)
+        self.group_search_combo.addItems(self.SEARCH_FIELDS)
+        idx2 = self.group_search_combo.findText(group_search_field)
+        self.group_search_combo.setCurrentIndex(max(idx2, 0))
+        search_field_layout.addWidget(self.group_search_combo, 0, 3)
+
+        layout.addLayout(search_field_layout)
+
+        # ── 忽略大小写 ──
         self.ignore_case_checkbox = QCheckBox("忽略大小写")
         self.ignore_case_checkbox.setChecked(ignore_case)
         layout.addWidget(self.ignore_case_checkbox)
 
+        # ── 按钮 ──
         button_layout = QHBoxLayout()
-        ok_button = QPushButton("确认")
-        ok_button.setMinimumWidth(120)
+        ok_button = QPushButton("筛选并预览")
+        ok_button.setMinimumWidth(130)
         ok_button.clicked.connect(self.accept)
         cancel_button = QPushButton("取消")
-        cancel_button.setMinimumWidth(120)
+        cancel_button.setMinimumWidth(100)
         cancel_button.clicked.connect(self.reject)
+        button_layout.addStretch()
         button_layout.addWidget(ok_button)
         button_layout.addWidget(cancel_button)
         layout.addLayout(button_layout)
 
     def select_csv(self):
-        path = QFileDialog.getOpenFileName(self, "选择联系人CSV", "", "CSV文件(*.csv)")[0]
-        if path:
-            self.csv_input.setText(path)
+        paths, _ = QFileDialog.getOpenFileNames(self, "选择联系人CSV", "", "CSV文件(*.csv)")
+        if paths:
+            existing = self.csv_input.text().strip()
+            all_paths = [p for p in existing.split(";") if p.strip()] + paths
+            self.csv_input.setText(";".join(all_paths))
 
     def get_input(self) -> dict:
         return {
-            "csv_path": self.csv_input.text().strip(),
+            "csv_paths": [p.strip() for p in self.csv_input.text().split(";") if p.strip()],
             "pattern": self.pattern_input.text().strip(),
             "fields": self.fields_input.text().strip(),
             "contact_type": self.contact_type_input.text().strip(),
             "ignore_case": self.ignore_case_checkbox.isChecked(),
+            "friend_search_field": self.friend_search_combo.currentText(),
+            "group_search_field": self.group_search_combo.currentText(),
         }
+
+
+class ContactConfirmDialog(QDialog):
+    """联系人确认弹窗：展示筛选结果，支持逐行移除、全选/取消，最终返回确认列表"""
+
+    def __init__(self, contacts: list[dict], parent=None) -> None:
+        """
+        contacts: 每项为 dict，包含 显示名称/备注/微信号/类型/_search_key
+        """
+        super().__init__(parent)
+        self.setWindowTitle("确认导入联系人")
+        self.resize(860, 520)
+        self.setMinimumSize(700, 400)
+        self.setSizeGripEnabled(True)
+
+        # 内部维护一份数据副本（不含已移除行）
+        self._contacts = list(contacts)
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(14, 14, 14, 14)
+        layout.setSpacing(8)
+
+        # ── 顶部信息栏 ──
+        top_bar = QHBoxLayout()
+        self.count_label = QLabel()
+        top_bar.addWidget(self.count_label)
+        top_bar.addStretch()
+
+        select_all_btn = QPushButton("全选")
+        select_all_btn.setFixedWidth(70)
+        select_all_btn.clicked.connect(self._select_all)
+        deselect_all_btn = QPushButton("全不选")
+        deselect_all_btn.setFixedWidth(70)
+        deselect_all_btn.clicked.connect(self._deselect_all)
+        remove_selected_btn = QPushButton("删除选中")
+        remove_selected_btn.setFixedWidth(80)
+        remove_selected_btn.clicked.connect(self._remove_selected)
+        top_bar.addWidget(select_all_btn)
+        top_bar.addWidget(deselect_all_btn)
+        top_bar.addWidget(remove_selected_btn)
+        layout.addLayout(top_bar)
+
+        # ── 表格 ──
+        self.table = QTableWidget(self)
+        self.table.setColumnCount(6)
+        self.table.setHorizontalHeaderLabels(["", "显示名称", "备注", "微信号", "类型", "搜索字段值"])
+        self.table.horizontalHeader().setSectionResizeMode(0, QHeaderView.Fixed)
+        self.table.setColumnWidth(0, 30)
+        self.table.horizontalHeader().setSectionResizeMode(1, QHeaderView.Stretch)
+        self.table.horizontalHeader().setSectionResizeMode(2, QHeaderView.Stretch)
+        self.table.horizontalHeader().setSectionResizeMode(3, QHeaderView.ResizeToContents)
+        self.table.horizontalHeader().setSectionResizeMode(4, QHeaderView.ResizeToContents)
+        self.table.horizontalHeader().setSectionResizeMode(5, QHeaderView.Stretch)
+        self.table.setSelectionBehavior(QAbstractItemView.SelectRows)
+        self.table.setEditTriggers(QAbstractItemView.NoEditTriggers)
+        self.table.verticalHeader().setVisible(False)
+        layout.addWidget(self.table)
+
+        self._populate_table()
+
+        # ── 底部按钮 ──
+        btn_layout = QHBoxLayout()
+        self.ok_btn = QPushButton("确认录入")
+        self.ok_btn.setMinimumWidth(120)
+        self.ok_btn.clicked.connect(self.accept)
+        cancel_btn = QPushButton("取消")
+        cancel_btn.setMinimumWidth(100)
+        cancel_btn.clicked.connect(self.reject)
+        btn_layout.addStretch()
+        btn_layout.addWidget(self.ok_btn)
+        btn_layout.addWidget(cancel_btn)
+        layout.addLayout(btn_layout)
+
+    def _populate_table(self):
+        self.table.setRowCount(len(self._contacts))
+        for row_i, contact in enumerate(self._contacts):
+            # 勾选框列
+            chk = QCheckBox()
+            chk.setChecked(True)
+            chk_widget = QWidget()
+            chk_layout = QHBoxLayout(chk_widget)
+            chk_layout.addWidget(chk)
+            chk_layout.setAlignment(Qt.AlignCenter)
+            chk_layout.setContentsMargins(0, 0, 0, 0)
+            self.table.setCellWidget(row_i, 0, chk_widget)
+
+            def _make_item(text):
+                item = QTableWidgetItem(text or "")
+                item.setFlags(item.flags() & ~Qt.ItemIsEditable)
+                return item
+
+            self.table.setItem(row_i, 1, _make_item(contact.get("显示名称", "")))
+            self.table.setItem(row_i, 2, _make_item(contact.get("备注", "")))
+            self.table.setItem(row_i, 3, _make_item(contact.get("微信号", "")))
+            self.table.setItem(row_i, 4, _make_item(contact.get("类型", "")))
+            self.table.setItem(row_i, 5, _make_item(contact.get("_search_key", "")))
+
+        self._update_count()
+
+    def _get_checkbox(self, row: int) -> QCheckBox | None:
+        widget = self.table.cellWidget(row, 0)
+        if widget:
+            return widget.findChild(QCheckBox)
+        return None
+
+    def _select_all(self):
+        for i in range(self.table.rowCount()):
+            chk = self._get_checkbox(i)
+            if chk:
+                chk.setChecked(True)
+
+    def _deselect_all(self):
+        for i in range(self.table.rowCount()):
+            chk = self._get_checkbox(i)
+            if chk:
+                chk.setChecked(False)
+
+    def _remove_selected(self):
+        rows_to_remove = []
+        for i in range(self.table.rowCount()):
+            chk = self._get_checkbox(i)
+            if chk and chk.isChecked():
+                rows_to_remove.append(i)
+        for i in reversed(rows_to_remove):
+            self.table.removeRow(i)
+            self._contacts.pop(i)
+        self._update_count()
+
+    def _update_count(self):
+        self.count_label.setText(f"共 {self.table.rowCount()} 位联系人")
+
+    def get_confirmed_contacts(self) -> list[dict]:
+        """返回表格中所有勾选的联系人（_contacts 对应行）"""
+        result = []
+        for i in range(self.table.rowCount()):
+            chk = self._get_checkbox(i)
+            if chk and chk.isChecked():
+                result.append(self._contacts[i])
+        return result
 
 
 class MySpinBox(QWidget):

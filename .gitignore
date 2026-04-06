@@ -35,10 +35,12 @@ contacts_*.csv
 filtered_wechat_ids*.txt
 @AutomationLog.txt
 nul
+docs/easychat_local.sqlite3
 
 # AI artifacts
 .agent/
 .claude/
+docs/.omx/
 
 # Local captures
 Snipaste_*.png

@@ -1,6 +1,9 @@
 import sys
 import time
 import os
+import csv
+import random
+import datetime
 import itertools
 import json
 from pathlib import Path
@@ -13,6 +16,7 @@ from csv_filter_contacts import (
     DEFAULT_FIELDS,
     export_wechat_ids,
     filter_contacts_from_csv,
+    filter_contacts_from_multiple_csvs,
     format_preview_rows,
     normalize_fields,
 )
@@ -89,14 +93,34 @@ class WechatGUI(QWidget):
 
         contact_filter = self.config.setdefault("contact_filter", {})
         for key, value in {
-            "csv_path": "",
+            "csv_paths": [],
             "pattern": "",
-            "fields": ",".join(DEFAULT_FIELDS),
-            "contact_type": "好友",
+            "fields": "显示名称,备注,昵称",
+            "contact_type": "",
             "ignore_case": False,
+            "friend_search_field": "备注",
+            "group_search_field": "显示名称",
         }.items():
             if key not in contact_filter:
                 contact_filter[key] = value
+                changed = True
+
+        # 迁移旧版单 csv_path 字段
+        if "csv_path" in contact_filter:
+            old_path = contact_filter.pop("csv_path")
+            if not contact_filter.get("csv_paths"):
+                contact_filter["csv_paths"] = [old_path] if old_path else []
+            changed = True
+
+        bulk_send = self.config.setdefault("bulk_send", {})
+        for key, value in {
+            "random_delay_min": 30,
+            "random_delay_max": 180,
+            "report_to": "科学-陈老师",
+            "operator_name": "",
+        }.items():
+            if key not in bulk_send:
+                bulk_send[key] = value
                 changed = True
 
         return changed
@@ -191,11 +215,13 @@ class WechatGUI(QWidget):
         def import_contacts_from_csv():
             filter_config = self.config["contact_filter"]
             dialog = ContactFilterDialog(
-                csv_path=filter_config["csv_path"],
-                pattern=filter_config["pattern"],
-                fields=filter_config["fields"],
-                contact_type=filter_config["contact_type"],
-                ignore_case=filter_config["ignore_case"],
+                csv_paths=filter_config.get("csv_paths", []),
+                pattern=filter_config.get("pattern", ""),
+                fields=filter_config.get("fields", "显示名称,备注,昵称"),
+                contact_type=filter_config.get("contact_type", ""),
+                ignore_case=filter_config.get("ignore_case", False),
+                friend_search_field=filter_config.get("friend_search_field", "备注"),
+                group_search_field=filter_config.get("group_search_field", "显示名称"),
                 parent=self,
             )
 
@@ -203,78 +229,91 @@ class WechatGUI(QWidget):
                 return
 
             filter_data = dialog.get_input()
-            if filter_data["csv_path"] == "":
-                QMessageBox.warning(self, "输入错误", "请选择联系人CSV文件！")
-                return
-            if filter_data["pattern"] == "":
-                QMessageBox.warning(self, "输入错误", "请输入匹配正则表达式！")
+            if not filter_data["csv_paths"]:
+                QMessageBox.warning(self, "输入错误", "请选择至少一个 CSV 文件！")
                 return
 
             self.config["contact_filter"] = filter_data
             self.save_config()
 
             try:
-                fields = normalize_fields(filter_data["fields"])
-                matched_rows = filter_contacts_from_csv(
-                    csv_path=Path(filter_data["csv_path"]),
-                    pattern_text=filter_data["pattern"],
-                    fields=fields,
-                    contact_type=filter_data["contact_type"],
-                    ignore_case=filter_data["ignore_case"],
-                )
+                fields = normalize_fields(filter_data["fields"]) if filter_data["fields"].strip() else ["显示名称", "备注", "昵称"]
+                pattern_text = filter_data["pattern"] if filter_data["pattern"].strip() else ".*"
+                contact_type = filter_data["contact_type"]
+                csv_paths = [Path(p) for p in filter_data["csv_paths"]]
+
+                all_matched: list = []
+                # 好友
+                if contact_type in ("", "好友"):
+                    rows = filter_contacts_from_multiple_csvs(
+                        csv_paths=csv_paths,
+                        pattern_text=pattern_text,
+                        fields=fields,
+                        contact_type="好友",
+                        ignore_case=filter_data["ignore_case"],
+                        search_key_field=filter_data["friend_search_field"],
+                    )
+                    all_matched.extend(rows)
+                # 群聊
+                if contact_type in ("", "群聊"):
+                    rows = filter_contacts_from_multiple_csvs(
+                        csv_paths=csv_paths,
+                        pattern_text=pattern_text,
+                        fields=fields,
+                        contact_type="群聊",
+                        ignore_case=filter_data["ignore_case"],
+                        search_key_field=filter_data["group_search_field"],
+                    )
+                    all_matched.extend(rows)
+
             except Exception as e:
                 QMessageBox.warning(self, "筛选失败", f"筛选联系人失败！\n错误信息：{e}")
                 return
 
-            if not matched_rows:
+            if not all_matched:
                 QMessageBox.information(self, "筛选结果", "未匹配到任何联系人。")
                 return
 
-            preview_lines = format_preview_rows(matched_rows, 10)
-            preview_text = "\n".join(preview_lines)
-            confirm_box = QMessageBox(self)
-            confirm_box.setIcon(QMessageBox.Information)
-            confirm_box.setWindowTitle("确认导入")
-            confirm_box.setText(
-                f"共匹配到 {len(matched_rows)} 个联系人。\n\n预览前 {min(10, len(matched_rows))} 条：\n{preview_text}"
-            )
-            confirm_box.setInformativeText("选择“覆盖导入”会清空当前待发送用户列表；选择“追加导入”会保留现有名单并自动跳过重复微信号。")
-            replace_button = confirm_box.addButton("覆盖导入", QMessageBox.AcceptRole)
-            append_button = confirm_box.addButton("追加导入", QMessageBox.ActionRole)
-            confirm_box.addButton("取消", QMessageBox.RejectRole)
-            confirm_box.exec_()
-
-            clicked_button = confirm_box.clickedButton()
-            if clicked_button not in (replace_button, append_button):
+            # 弹出确认弹窗
+            confirm_dialog = ContactConfirmDialog(all_matched, parent=self)
+            if confirm_dialog.exec_() != QDialog.Accepted:
                 return
 
-            existing_names = set()
-            if clicked_button is replace_button:
+            confirmed = confirm_dialog.get_confirmed_contacts()
+            if not confirmed:
+                QMessageBox.information(self, "无选中", "没有勾选任何联系人。")
+                return
+
+            # 选择覆盖/追加
+            mode_box = QMessageBox(self)
+            mode_box.setWindowTitle("选择导入方式")
+            mode_box.setText(f"共确认 {len(confirmed)} 人，请选择导入方式：")
+            replace_btn2 = mode_box.addButton("覆盖导入", QMessageBox.AcceptRole)
+            append_btn2 = mode_box.addButton("追加导入", QMessageBox.ActionRole)
+            mode_box.addButton("取消", QMessageBox.RejectRole)
+            mode_box.exec_()
+            clicked = mode_box.clickedButton()
+            if clicked not in (replace_btn2, append_btn2):
+                return
+
+            existing_keys = set(get_existing_contact_names())
+            if clicked is replace_btn2:
                 self.contacts_view.clear()
-            else:
-                existing_names = set(get_existing_contact_names())
+                existing_keys.clear()
 
             added_count = 0
-            for row in matched_rows:
-                wechat_id = (row.get("微信号") or "").strip()
-                if wechat_id == "" or wechat_id in existing_names:
+            for row in confirmed:
+                search_key = row.get("_search_key", "").strip()
+                if not search_key or search_key in existing_keys:
                     continue
-                self.contacts_view.addItem(wechat_id)
-                existing_names.add(wechat_id)
+                self.contacts_view.addItem(f"{self.contacts_view.count()+1}:{search_key}")
+                existing_keys.add(search_key)
                 added_count += 1
 
             refresh_contact_numbers()
             update_contacts()
+            QMessageBox.information(self, "导入成功", f"已导入 {added_count} 个联系人。")
 
-            timestamp = time.strftime("%Y-%m-%dT%H-%M-%S")
-            export_path = Path("build") / f"filtered_wechat_ids_{timestamp}.txt"
-            export_wechat_ids(export_path, matched_rows)
-
-            QMessageBox.information(
-                self,
-                "导入成功",
-                f"已导入 {added_count} 个联系人。\n匹配结果已保存到：\n{export_path.resolve()}",
-            )
 
         # 增加用户列表信息
         def add_contact():
@@ -553,55 +592,117 @@ class WechatGUI(QWidget):
 
         # 发送按钮响应事件
         def send_msg(gap=None, st=None, ed=None):
-            # 在每次发送时进行初始化
+            """发送消息。支持随机延迟、日志记录、完成后向陈老师汇报。"""
             self.hotkey_pressed = False
-
-            # 获取发送间隔
             interval = send_interval.spin_box.value()
+            bulk_cfg = self.config.get("bulk_send", {})
+            delay_min = int(bulk_cfg.get("random_delay_min", 30))
+            delay_max = int(bulk_cfg.get("random_delay_max", 180))
+            report_to = bulk_cfg.get("report_to", "科学-陈老师")
+            operator_name = bulk_cfg.get("operator_name", "")
+
+            success_count = 0
+            fail_count = 0
+            start_time = datetime.datetime.now()
+            log_path = Path("send_log.csv")
+            log_exists = log_path.exists()
+
+            # 获取消息内容摘要（前50字）
+            msg_preview = ""
+            for mi in range(self.msg.count()):
+                raw = self.msg.item(mi).text()
+                parts = raw.split(":", 3)
+                if len(parts) >= 3 and parts[1] == "text":
+                    content_part = parts[3] if len(parts) > 3 else ""
+                    # content_part 格式为 at:text
+                    text_part = content_part.split(":", 1)[-1]
+                    msg_preview += text_part[:50]
+                    break
 
             try:
-                # 如果未定义范围的开头和结尾，则默认发送全部信息
                 if st is None:
                     st = 1
                     ed = self.msg.count()
 
-                # 获得用户编号列表
-                for user_i in range(self.contacts_view.count()):
-                    # 等待间隔时间
-                    time.sleep(int(interval))
+                total = self.contacts_view.count()
 
-                    rank, name = self.contacts_view.item(user_i).text().split(':', 1)
-                    # For the first message, we need to search user
-                    search_user = True
+                with open(log_path, "a", encoding="utf-8-sig", newline="") as log_f:
+                    writer = csv.writer(log_f)
+                    if not log_exists:
+                        writer.writerow(["时间", "收件人", "搜索字段", "消息摘要", "结果"])
 
-                    for msg_i in range(st - 1, ed):
-                        # 如果全局热键被按下，则停止发送
-                        if self.hotkey_pressed is True:
-                            QMessageBox.warning(self, "发送失败", f"热键已按下，已停止发送！")
-                            return
+                    for user_i in range(total):
+                        # 固定间隔（原有逻辑）
+                        if user_i > 0:
+                            time.sleep(int(interval))
 
-                        msg = self.msg.item(msg_i).text().replace("\\n", "\n")
+                        item_text = self.contacts_view.item(user_i).text()
+                        rank, name = item_text.split(":", 1)
+                        search_user = True
 
-                        _, type, to, content = msg.split(':', 3)
-                        # 判断是否需要发送给该用户
-                        if to == "all" or str(rank) in to.split(','):
-                            # 判断为文本内容
-                            if type == "text":
-                                # 分出at的人和发送的文本内容
-                                at_names, text = content.split(":", 1)
-                                at_names = at_names.split(",")
-                                self.wechat.send_msg(name, at_names, text, search_user)
+                        try:
+                            for msg_i in range(st - 1, ed):
+                                if self.hotkey_pressed:
+                                    QMessageBox.warning(self, "发送中止", "热键已按下，已停止发送！")
+                                    return
 
-                            # 判断为文件内容
-                            elif type == "file":
-                                self.wechat.send_file(name, content, search_user)
+                                msg = self.msg.item(msg_i).text().replace("\\n", "\n")
+                                _, mtype, to, content = msg.split(":", 3)
 
-                            # 搜索用户只在第一次发送时进行
-                            search_user = False
+                                if to == "all" or str(rank) in to.split(","):
+                                    if mtype == "text":
+                                        at_names, text = content.split(":", 1)
+                                        at_names = at_names.split(",")
+                                        self.wechat.send_msg(name, at_names, text, search_user)
+                                    elif mtype == "file":
+                                        self.wechat.send_file(name, content, search_user)
+                                    search_user = False
+
+                            success_count += 1
+                            writer.writerow([
+                                datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                                name, name, msg_preview[:50], "成功"
+                            ])
+
+                        except Exception as e_user:
+                            fail_count += 1
+                            writer.writerow([
+                                datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                                name, name, msg_preview[:50], f"失败: {e_user}"
+                            ])
+
+                        # 随机延迟（非最后一人）
+                        if user_i < total - 1 and delay_max > 0:
+                            delay = random.randint(
+                                min(delay_min, delay_max),
+                                max(delay_min, delay_max)
+                            )
+                            time.sleep(delay)
+
+                # 发送完成后向陈老师汇报
+                end_time = datetime.datetime.now()
+                elapsed = str(end_time - start_time).split(".")[0]
+                op_name = operator_name or "未知"
+                time_fmt = start_time.strftime("%Y-%m-%d %H:%M")
+                end_fmt = end_time.strftime("%H:%M")
+                report_lines = [
+                    f"【群发汇报】",
+                    f"操作人：{op_name}",
+                    f"发送总人数：{total}",
+                    f"成功：{success_count} / 失败：{fail_count}",
+                    f"内容摘要：{msg_preview[:30]}...",
+                    f"执行时间：{time_fmt} ~ {end_fmt}（历时{elapsed}）",
+                ]
+                report_text = "\n".join(report_lines)
+                try:
+                    self.wechat.send_msg(report_to, [""], report_text, True)
+                except Exception as e_report:
+                    print(f"汇报失败: {e_report}")
 
             except Exception as e:
                 QMessageBox.warning(self, "发送失败", f"发送失败！请检查内容格式或是否有遗漏步骤！\n错误信息：{e}")
                 return
+
 
         # 左边的布局
         vbox_left = QVBoxLayout()
@@ -634,9 +735,45 @@ class WechatGUI(QWidget):
 
         send_interval.spin_box.valueChanged.connect(change_spin_box)
 
+        # 随机延迟配置（群发时在每位用户之间随机等待）
+        bulk_cfg = self.config.get("bulk_send", {})
+        delay_row = QHBoxLayout()
+        delay_row.addWidget(QLabel("群发随机延迟（秒）：最小"))
+        self.delay_min_spin = QSpinBox()
+        self.delay_min_spin.setRange(0, 3600)
+        self.delay_min_spin.setValue(bulk_cfg.get("random_delay_min", 30))
+        delay_row.addWidget(self.delay_min_spin)
+        delay_row.addWidget(QLabel("最大"))
+        self.delay_max_spin = QSpinBox()
+        self.delay_max_spin.setRange(0, 3600)
+        self.delay_max_spin.setValue(bulk_cfg.get("random_delay_max", 180))
+        delay_row.addWidget(self.delay_max_spin)
+        delay_row.addStretch()
+
+        operator_row = QHBoxLayout()
+        operator_row.addWidget(QLabel("操作人名称（用于汇报）："))
+        self.operator_input = QLineEdit()
+        self.operator_input.setText(bulk_cfg.get("operator_name", ""))
+        self.operator_input.setPlaceholderText("填写你的名字")
+        operator_row.addWidget(self.operator_input)
+
+        def save_bulk_config():
+            self.config.setdefault("bulk_send", {})
+            self.config["bulk_send"]["random_delay_min"] = self.delay_min_spin.value()
+            self.config["bulk_send"]["random_delay_max"] = self.delay_max_spin.value()
+            self.config["bulk_send"]["operator_name"] = self.operator_input.text().strip()
+            self.save_config()
+
+        self.delay_min_spin.valueChanged.connect(save_bulk_config)
+        self.delay_max_spin.valueChanged.connect(save_bulk_config)
+        self.operator_input.editingFinished.connect(save_bulk_config)
+
+
         vbox_left.addWidget(info)
         vbox_left.addWidget(self.msg)
         vbox_left.addWidget(send_interval)
+        vbox_left.addLayout(delay_row)
+        vbox_left.addLayout(operator_row)
         vbox_left.addWidget(send_btn)
 
         # 右边的选择内容界面
@@ -668,56 +805,6 @@ class WechatGUI(QWidget):
 
         return hbox
 
-    # 提供选择微信语言版本的按钮
-    def init_language_choose(self):
-        def switch_language():
-            if lang_zh_CN_btn.isChecked():
-                self.wechat.lc = WeChatLocale("zh-CN")
-                self.config["settings"]["language"] = "zh-CN"
-
-            elif lang_zh_TW_btn.isChecked():
-                self.wechat.lc = WeChatLocale("zh-TW")
-                self.config["settings"]["language"] = "zh-TW"
-
-            elif lang_en_btn.isChecked():
-                self.wechat.lc = WeChatLocale("en-US")
-                self.config["settings"]["language"] = "en-US"
-
-            self.save_config()
-
-        # 提示信息
-        info = QLabel("请选择你的微信系统语言")
-
-        # 选择按钮
-        lang_zh_CN_btn = QRadioButton("简体中文")
-        lang_zh_TW_btn = QRadioButton("繁体中文")
-        lang_en_btn = QRadioButton("English")
-
-        if self.config["settings"]["language"] == "zh-CN":
-            lang_zh_CN_btn.setChecked(True)
-
-        elif self.config["settings"]["language"] == "zh-TW":
-            lang_zh_TW_btn.setChecked(True)
-
-        elif self.config["settings"]["language"] == "en-US":
-            lang_en_btn.setChecked(True)
-
-        # 选择按钮的响应事件
-        lang_zh_CN_btn.clicked.connect(switch_language)
-        lang_zh_TW_btn.clicked.connect(switch_language)
-        lang_en_btn.clicked.connect(switch_language)
-
-        # 整体布局
-        hbox = QHBoxLayout()
-        hbox.addWidget(lang_zh_CN_btn)
-        hbox.addWidget(lang_zh_TW_btn)
-        hbox.addWidget(lang_en_btn)
-
-        vbox = QVBoxLayout()
-        vbox.addWidget(info)
-        vbox.addLayout(hbox)
-
-        return vbox
 
     def initUI(self):
         # 垂直布局
@@ -728,8 +815,6 @@ class WechatGUI(QWidget):
         self.wechat_notice_btn.resize(self.wechat_notice_btn.sizeHint())
         self.wechat_notice_btn.clicked.connect(self.show_wechat_open_notice)
 
-        # 选择微信语言界面
-        lang = self.init_language_choose()
 
         # 用户选择界面
         contacts = self.init_choose_contacts()
@@ -741,7 +826,6 @@ class WechatGUI(QWidget):
         clock = self.init_clock()
 
         vbox.addWidget(self.wechat_notice_btn)
-        vbox.addLayout(lang)
         vbox.addLayout(contacts)
         vbox.addStretch(5)
         vbox.addLayout(msg_widget)

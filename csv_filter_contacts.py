@@ -59,9 +59,22 @@ def normalize_fields(raw_fields: str) -> list[str]:
     return fields
 
 
+def wildcard_to_regex(pattern_text: str) -> str:
+    """将通配符模式转换为正则表达式。* 匹配任意字符，? 匹配单个字符。
+    如果字符串已经包含正则特殊语法（如 ^、$、[、(、{），则视为纯正则直接返回。"""
+    regex_only_chars = set("^$[](){}+\\|")
+    if any(c in pattern_text for c in regex_only_chars):
+        return pattern_text
+    # 通配符转义：先转义正则元字符，再还原 * 和 ?
+    escaped = re.escape(pattern_text)
+    escaped = escaped.replace(r"\*", ".*").replace(r"\?", ".")
+    return escaped
+
+
 def compile_pattern(pattern_text: str, ignore_case: bool = False) -> re.Pattern[str]:
     flags = re.IGNORECASE if ignore_case else 0
-    return re.compile(pattern_text, flags)
+    regex_text = wildcard_to_regex(pattern_text)
+    return re.compile(regex_text, flags)
 
 
 def read_contacts(csv_path: Path) -> list[dict[str, str]]:
@@ -72,13 +85,13 @@ def read_contacts(csv_path: Path) -> list[dict[str, str]]:
         return list(reader)
 
 
-def validate_columns(rows: list[dict[str, str]], fields: Iterable[str], contact_type: str) -> None:
+def validate_columns(rows: list[dict[str, str]], fields: Iterable[str], contact_type: str, require_wechat_id: bool = True) -> None:
     if not rows:
         raise ValueError("CSV 文件没有联系人数据。")
 
     available_columns = set(rows[0].keys())
     missing_columns = [field for field in fields if field not in available_columns]
-    if "微信号" not in available_columns:
+    if require_wechat_id and "微信号" not in available_columns:
         missing_columns.append("微信号")
     if contact_type and "类型" not in available_columns:
         missing_columns.append("类型")
@@ -97,24 +110,38 @@ def filter_contacts(
     pattern: re.Pattern[str],
     fields: Iterable[str],
     contact_type: str,
+    search_key_field: str = "",
 ) -> list[dict[str, str]]:
+    """筛选联系人。
+    search_key_field: 最终发送时用来在微信搜索框搜索的字段名，结果会注入到 _search_key 字段中。
+    """
     matched_rows: list[dict[str, str]] = []
-    seen_wechat_ids: set[str] = set()
+    seen_keys: set[str] = set()
 
     for row in rows:
         if contact_type and (row.get("类型") or "").strip() != contact_type:
             continue
 
+        # 用显示名称作为去重 key（群聊没有微信号）
+        display_name = (row.get("显示名称") or "").strip()
         wechat_id = (row.get("微信号") or "").strip()
-        if not wechat_id or wechat_id in seen_wechat_ids:
+        dedup_key = wechat_id or display_name
+        if not dedup_key or dedup_key in seen_keys:
             continue
 
         search_text = build_search_text(row, fields)
         if not pattern.search(search_text):
             continue
 
-        matched_rows.append(row)
-        seen_wechat_ids.add(wechat_id)
+        # 注入搜索识别字段
+        result_row = dict(row)
+        if search_key_field:
+            result_row["_search_key"] = (row.get(search_key_field) or "").strip()
+        else:
+            result_row["_search_key"] = wechat_id or display_name
+
+        matched_rows.append(result_row)
+        seen_keys.add(dedup_key)
 
     return matched_rows
 
@@ -125,11 +152,39 @@ def filter_contacts_from_csv(
     fields: Iterable[str],
     contact_type: str = "好友",
     ignore_case: bool = False,
+    search_key_field: str = "",
 ) -> list[dict[str, str]]:
     rows = read_contacts(csv_path)
-    validate_columns(rows, fields, contact_type)
+    require_wechat_id = (contact_type == "好友")
+    validate_columns(rows, fields, contact_type, require_wechat_id=require_wechat_id)
     pattern = compile_pattern(pattern_text, ignore_case)
-    return filter_contacts(rows, pattern, fields, contact_type)
+    return filter_contacts(rows, pattern, fields, contact_type, search_key_field)
+
+
+def load_and_merge_csvs(csv_paths: list[Path]) -> list[dict[str, str]]:
+    """合并多个CSV文件，保留所有行（去重由后续filter负责）。"""
+    all_rows: list[dict[str, str]] = []
+    for path in csv_paths:
+        if path.exists():
+            all_rows.extend(read_contacts(path))
+    return all_rows
+
+
+def filter_contacts_from_multiple_csvs(
+    csv_paths: list[Path],
+    pattern_text: str,
+    fields: Iterable[str],
+    contact_type: str = "",
+    ignore_case: bool = False,
+    search_key_field: str = "",
+) -> list[dict[str, str]]:
+    """从多个CSV中合并筛选联系人。contact_type为空则不过滤类型。"""
+    all_rows = load_and_merge_csvs(csv_paths)
+    if not all_rows:
+        raise ValueError("所有CSV文件均为空或不存在。")
+    validate_columns(all_rows, fields, contact_type, require_wechat_id=False)
+    pattern = compile_pattern(pattern_text, ignore_case)
+    return filter_contacts(all_rows, pattern, fields, contact_type, search_key_field)
 
 
 def export_wechat_ids(output_path: Path, matched_rows: list[dict[str, str]]) -> None:

@@ -51,15 +51,15 @@ def load_contact_records(file_path: str | Path) -> tuple[list[dict[str, str]], l
 def validate_contact_records(
     records: list[dict[str, str]],
     columns: list[str],
-    required_column: str = DEFAULT_SEND_TARGET_COLUMN,
+    required_column: str | None = DEFAULT_SEND_TARGET_COLUMN,
 ) -> None:
-    normalized_required_column = required_column.strip() or DEFAULT_SEND_TARGET_COLUMN
-
     if not columns:
         raise ValueError("Excel 文件没有表头。")
 
-    if normalized_required_column not in columns:
-        raise ValueError(f"Excel 中缺少必填列：{normalized_required_column}")
+    if required_column is not None:
+        normalized_required_column = required_column.strip() or DEFAULT_SEND_TARGET_COLUMN
+        if normalized_required_column not in columns:
+            raise ValueError(f"Excel 中缺少必填列：{normalized_required_column}")
 
     if not records:
         raise ValueError("Excel 中没有可用数据。")
