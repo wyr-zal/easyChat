@@ -570,6 +570,97 @@ class ContactConfirmDialog(QDialog):
         return result
 
 
+class FilterResultDialog(QDialog):
+    """筛选结果弹窗：逐条删除后，再导入发送计划。"""
+
+    def __init__(self, contacts: list[dict], parent=None) -> None:
+        super().__init__(parent)
+        self.setWindowTitle("筛选结果")
+        self.resize(980, 560)
+        self.setMinimumSize(820, 420)
+        self.setSizeGripEnabled(True)
+
+        self._contacts = list(contacts)
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(14, 14, 14, 14)
+        layout.setSpacing(8)
+
+        header_layout = QHBoxLayout()
+        self.count_label = QLabel()
+        header_layout.addWidget(self.count_label)
+        header_layout.addStretch()
+        layout.addLayout(header_layout)
+
+        helper_label = QLabel("请先核对筛选结果；不想发送的对象可直接点行尾“删除”，确认无误后再导入发送计划。")
+        helper_label.setWordWrap(True)
+        helper_label.setStyleSheet("color:#555;")
+        layout.addWidget(helper_label)
+
+        self.table = QTableWidget(self)
+        self.table.setColumnCount(6)
+        self.table.setHorizontalHeaderLabels(["显示名称", "备注", "微信号", "类型", "搜索字段值", "操作"])
+        self.table.horizontalHeader().setSectionResizeMode(0, QHeaderView.Stretch)
+        self.table.horizontalHeader().setSectionResizeMode(1, QHeaderView.Stretch)
+        self.table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeToContents)
+        self.table.horizontalHeader().setSectionResizeMode(3, QHeaderView.ResizeToContents)
+        self.table.horizontalHeader().setSectionResizeMode(4, QHeaderView.Stretch)
+        self.table.horizontalHeader().setSectionResizeMode(5, QHeaderView.ResizeToContents)
+        self.table.setSelectionBehavior(QAbstractItemView.SelectRows)
+        self.table.setEditTriggers(QAbstractItemView.NoEditTriggers)
+        self.table.verticalHeader().setVisible(False)
+        layout.addWidget(self.table)
+
+        button_layout = QHBoxLayout()
+        self.ok_btn = QPushButton("导入发送计划")
+        self.ok_btn.setMinimumWidth(140)
+        self.ok_btn.clicked.connect(self.accept)
+        cancel_btn = QPushButton("取消")
+        cancel_btn.setMinimumWidth(100)
+        cancel_btn.clicked.connect(self.reject)
+        button_layout.addStretch()
+        button_layout.addWidget(self.ok_btn)
+        button_layout.addWidget(cancel_btn)
+        layout.addLayout(button_layout)
+
+        self._populate_table()
+
+    def _make_item(self, text: str) -> QTableWidgetItem:
+        item = QTableWidgetItem(text or "")
+        item.setFlags(item.flags() & ~Qt.ItemIsEditable)
+        return item
+
+    def _populate_table(self) -> None:
+        self.table.setRowCount(len(self._contacts))
+        for row_index, contact in enumerate(self._contacts):
+            self.table.setItem(row_index, 0, self._make_item(contact.get("显示名称", "")))
+            self.table.setItem(row_index, 1, self._make_item(contact.get("备注", "")))
+            self.table.setItem(row_index, 2, self._make_item(contact.get("微信号", "")))
+            self.table.setItem(row_index, 3, self._make_item(contact.get("类型", "")))
+            self.table.setItem(row_index, 4, self._make_item(contact.get("_search_key", "")))
+
+            delete_button = QPushButton("删除")
+            delete_button.clicked.connect(lambda _, index=row_index: self._remove_row(index))
+            self.table.setCellWidget(row_index, 5, delete_button)
+
+        self.table.resizeRowsToContents()
+        self._update_count()
+
+    def _remove_row(self, row_index: int) -> None:
+        if row_index < 0 or row_index >= len(self._contacts):
+            return
+        self._contacts.pop(row_index)
+        self._populate_table()
+
+    def _update_count(self) -> None:
+        total = len(self._contacts)
+        self.count_label.setText(f"当前筛选结果共 {total} 条。")
+        self.ok_btn.setEnabled(total > 0)
+
+    def get_remaining_contacts(self) -> list[dict]:
+        return list(self._contacts)
+
+
 class MySpinBox(QWidget):
     def __init__(self, desc: str, **kwargs):
         """
