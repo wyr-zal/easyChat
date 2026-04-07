@@ -151,6 +151,7 @@ class PersonalizedSendThread(QThread):
                         index=index,
                         total=total,
                     )
+                    stopped_after_target = bool(row_result.pop("_stop_requested", False))
                     summary["targets"].append(row_result)
                     summary["attachments_sent"] += int(row_result.get("attachment_sent_count", 0))
                     summary["attachments_failed"] += int(row_result.get("attachment_failed_count", 0))
@@ -165,6 +166,11 @@ class PersonalizedSendThread(QThread):
 
                     self.progress.emit(index, total, str(row_result.get("target_value") or ""))
                     self._safe_target_result_callback(row_result)
+
+                    if stopped_after_target:
+                        summary["stopped"] = True
+                        self._emit_log("用户已停止发送。")
+                        break
 
                     if index < total:
                         self._sleep_with_stop_check(self.interval_seconds)
@@ -190,7 +196,7 @@ class PersonalizedSendThread(QThread):
         summary["finished_at"] = finished_at.strftime("%Y-%m-%d %H:%M:%S")
         summary["elapsed"] = str(finished_at - start_time).split(".")[0]
 
-        if self.auto_report and sender is not None and self.report_to:
+        if self.auto_report and (not summary["stopped"]) and sender is not None and self.report_to:
             try:
                 sender.send_text_message(
                     self.report_to,
@@ -271,32 +277,52 @@ class PersonalizedSendThread(QThread):
         attachment_sent_count = 0
         attachment_failed_count = 0
         attachment_error = ""
+        stop_error = "用户手动停止，未继续发送剩余附件。"
 
         if attachments and row_result["text_status"] != TEXT_STATUS_FAILED:
-            for attachment_index, attachment in enumerate(attachments, start=1):
-                file_path = str(attachment.get("file_path") or "")
-                file_type = str(attachment.get("file_type") or "")
-                attachment_item = {
-                    "file_path": file_path,
-                    "file_type": file_type,
-                    "attachment_status": ATTACHMENT_STATUS_SKIPPED,
-                    "error_msg": "",
-                }
-                try:
-                    sender.send_file(
-                        target_value,
-                        file_path,
-                        search_user=(not has_message and attachment_index == 1),
-                    )
-                    attachment_item["attachment_status"] = ATTACHMENT_STATUS_SUCCESS
-                    attachment_sent_count += 1
-                except Exception as exc:
-                    attachment_item["attachment_status"] = ATTACHMENT_STATUS_FAILED
-                    attachment_item["error_msg"] = str(exc)
-                    attachment_failed_count += 1
-                    if attachment_error == "":
-                        attachment_error = str(exc)
-                attachment_results.append(attachment_item)
+            if self._stop_requested:
+                attachment_failed_count += self._append_interrupted_attachments(
+                    attachment_results,
+                    attachments,
+                    error_message=stop_error,
+                )
+                attachment_error = stop_error
+                row_result["_stop_requested"] = True
+            else:
+                for attachment_index, attachment in enumerate(attachments, start=1):
+                    if self._stop_requested:
+                        attachment_failed_count += self._append_interrupted_attachments(
+                            attachment_results,
+                            attachments[attachment_index - 1 :],
+                            error_message=stop_error,
+                        )
+                        attachment_error = attachment_error or stop_error
+                        row_result["_stop_requested"] = True
+                        break
+
+                    file_path = str(attachment.get("file_path") or "")
+                    file_type = str(attachment.get("file_type") or "")
+                    attachment_item = {
+                        "file_path": file_path,
+                        "file_type": file_type,
+                        "attachment_status": ATTACHMENT_STATUS_SKIPPED,
+                        "error_msg": "",
+                    }
+                    try:
+                        sender.send_file(
+                            target_value,
+                            file_path,
+                            search_user=(not has_message and attachment_index == 1),
+                        )
+                        attachment_item["attachment_status"] = ATTACHMENT_STATUS_SUCCESS
+                        attachment_sent_count += 1
+                    except Exception as exc:
+                        attachment_item["attachment_status"] = ATTACHMENT_STATUS_FAILED
+                        attachment_item["error_msg"] = str(exc)
+                        attachment_failed_count += 1
+                        if attachment_error == "":
+                            attachment_error = str(exc)
+                    attachment_results.append(attachment_item)
 
         elif attachments and row_result["text_status"] == TEXT_STATUS_FAILED:
             for attachment in attachments:
@@ -325,6 +351,8 @@ class PersonalizedSendThread(QThread):
             has_attachments=has_attachments,
         )
         row_result["error_msg"] = row_result["error_msg"] or attachment_error or text_error
+        if self._stop_requested:
+            row_result["_stop_requested"] = True
 
         status_text = self._build_target_status_text(row_result)
         self._emit_log(f"[{index}/{total}] {status_text}：{target_value}", row_result)
@@ -489,6 +517,26 @@ class PersonalizedSendThread(QThread):
         if send_status == SEND_STATUS_SKIPPED:
             return "已跳过"
         return "发送失败"
+
+    def _append_interrupted_attachments(
+        self,
+        attachment_results: list[dict],
+        attachments: list[dict],
+        *,
+        error_message: str,
+    ) -> int:
+        count = 0
+        for attachment in attachments:
+            attachment_results.append(
+                {
+                    "file_path": str(attachment.get("file_path") or ""),
+                    "file_type": str(attachment.get("file_type") or ""),
+                    "attachment_status": ATTACHMENT_STATUS_FAILED,
+                    "error_msg": error_message,
+                }
+            )
+            count += 1
+        return count
 
     def _finalize_row_result(self, row_result: dict, started_at: datetime) -> dict:
         finished_at = datetime.now()

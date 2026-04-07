@@ -318,7 +318,6 @@ class ExcelSenderGUI(QWidget):
         layout = QVBoxLayout(page)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(12)
-        layout.addWidget(self.build_settings_group())
         layout.addWidget(self.build_control_group())
         layout.addWidget(self.build_schedule_group())
         layout.addWidget(self.build_preview_group(), stretch=3)
@@ -682,9 +681,14 @@ class ExcelSenderGUI(QWidget):
 
         return group
 
-    def build_action_bar(self) -> QHBoxLayout:
-        layout = QHBoxLayout()
-        layout.setSpacing(12)
+    def build_action_bar(self) -> QVBoxLayout:
+        layout = QVBoxLayout()
+        layout.setSpacing(8)
+
+        top_row = QHBoxLayout()
+        top_row.setSpacing(12)
+        bottom_row = QHBoxLayout()
+        bottom_row.setSpacing(12)
 
         interval_label = QLabel("发送间隔（秒）")
         self.interval_spin = QSpinBox(self)
@@ -693,9 +697,6 @@ class ExcelSenderGUI(QWidget):
 
         self.preview_button = QPushButton("刷新发送计划")
         self.preview_button.clicked.connect(self.show_preview_results)
-
-        self.confirm_task_button = QPushButton("从本地库导入计划")
-        self.confirm_task_button.clicked.connect(self.confirm_current_selection)
 
         self.start_button = QPushButton("开始发送")
         self.start_button.clicked.connect(self.start_sending)
@@ -713,16 +714,30 @@ class ExcelSenderGUI(QWidget):
         self.send_status_label = QLabel("等待发送。")
         self.send_status_label.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
 
-        layout.addWidget(interval_label)
-        layout.addWidget(self.interval_spin)
-        layout.addWidget(self.preview_button)
-        layout.addWidget(self.confirm_task_button)
-        layout.addWidget(self.export_json_button)
-        layout.addWidget(self.import_json_button)
-        layout.addWidget(self.start_button)
-        layout.addWidget(self.stop_button)
-        layout.addStretch(1)
-        layout.addWidget(self.send_status_label)
+        for button in (
+            self.preview_button,
+            self.export_json_button,
+            self.import_json_button,
+            self.start_button,
+            self.stop_button,
+        ):
+            button.setMinimumHeight(34)
+            button.setMinimumWidth(132)
+
+        top_row.addWidget(interval_label)
+        top_row.addWidget(self.interval_spin)
+        top_row.addWidget(self.preview_button)
+        top_row.addWidget(self.export_json_button)
+        top_row.addStretch(1)
+
+        bottom_row.addWidget(self.import_json_button)
+        bottom_row.addWidget(self.start_button)
+        bottom_row.addWidget(self.stop_button)
+        bottom_row.addStretch(1)
+        bottom_row.addWidget(self.send_status_label)
+
+        layout.addLayout(top_row)
+        layout.addLayout(bottom_row)
         return layout
 
     def build_preview_group(self) -> QGroupBox:
@@ -810,12 +825,13 @@ class ExcelSenderGUI(QWidget):
         self.on_send_mode_changed()
 
         language = self.config["settings"]["language"]
-        if language == "zh-TW":
-            self.lang_zh_tw.setChecked(True)
-        elif language == "en-US":
-            self.lang_en.setChecked(True)
-        else:
-            self.lang_zh_cn.setChecked(True)
+        if hasattr(self, "lang_zh_tw") and hasattr(self, "lang_en") and hasattr(self, "lang_zh_cn"):
+            if language == "zh-TW":
+                self.lang_zh_tw.setChecked(True)
+            elif language == "en-US":
+                self.lang_en.setChecked(True)
+            else:
+                self.lang_zh_cn.setChecked(True)
 
         self.update_local_db_status()
         self.refresh_local_store_page()
@@ -970,19 +986,7 @@ class ExcelSenderGUI(QWidget):
         self.filter_local_store_into_task()
 
     def update_action_button_state(self) -> None:
-        if not hasattr(self, "confirm_task_button"):
-            return
-
-        if self.send_thread is not None and self.send_thread.isRunning():
-            self.confirm_task_button.setEnabled(False)
-            return
-
-        has_local_data = bool(self.local_store.get_current_import_summaries())
-        self.confirm_task_button.setEnabled(has_local_data)
-        if self.current_task_id is not None and self.is_local_db_mode():
-            self.confirm_task_button.setText("重新从本地库筛选")
-        else:
-            self.confirm_task_button.setText("从本地库导入计划")
+        return
 
     def ensure_local_filter_defaults(self) -> None:
         current_fields = [field.strip() for field in self.filter_fields_input.text().split(",") if field.strip()]
@@ -1359,15 +1363,7 @@ class ExcelSenderGUI(QWidget):
             QMessageBox.warning(self, "无法导出 JSON", str(exc))
             return
 
-        start_dir = self.config.get("json_tasks", {}).get("last_export_dir") or ""
-        path, _ = QFileDialog.getSaveFileName(
-            self,
-            "导出 JSON",
-            str(Path(start_dir) / "wechat-task.json") if start_dir else "wechat-task.json",
-            "JSON 文件(*.json)",
-        )
-        if not path:
-            return
+        path = self.build_export_json_path()
 
         try:
             if json_task_helper is not None:
@@ -1384,6 +1380,13 @@ class ExcelSenderGUI(QWidget):
         self.append_log(f"已导出 JSON：{path}")
         QMessageBox.information(self, "导出成功", f"JSON 已导出到：\n{path}")
 
+    def build_export_json_path(self, now: datetime | None = None) -> str:
+        current_time = now or datetime.now()
+        base_dir = Path(self.config_path).resolve(strict=False).parent / "task"
+        export_dir = base_dir / current_time.strftime("%Y%m") / current_time.strftime("%d")
+        file_name = f"{current_time.strftime('%H-%M')}.json"
+        return str((export_dir / file_name).resolve(strict=False))
+
     def import_json_tasks(self) -> None:
         start_dir = self.config.get("json_tasks", {}).get("last_import_dir") or ""
         paths, _ = QFileDialog.getOpenFileNames(
@@ -1398,12 +1401,8 @@ class ExcelSenderGUI(QWidget):
         self.config["json_tasks"]["last_import_dir"] = str(Path(paths[0]).parent)
         self.save_config()
 
-        existing_jobs = self.local_store.list_scheduled_jobs(limit=500)
-        existing_schedule_times = {job.scheduled_at for job in existing_jobs if job.scheduled_at}
-        imported_jobs: list[tuple[str, int, int, str]] = []
-        conflict_files: list[str] = []
+        preview_items: list[tuple[str, dict[str, Any]]] = []
         skipped_files: list[str] = []
-
         for path in paths:
             try:
                 if json_task_helper is not None:
@@ -1411,56 +1410,99 @@ class ExcelSenderGUI(QWidget):
                 else:
                     with open(path, "r", encoding="utf-8") as handle:
                         payload = json.load(handle)
-                task_id, job_id = self.local_store.create_json_task_from_payload(
-                    source_json_path=path,
-                    payload=payload,
-                    interval_seconds=self.interval_spin.value(),
-                    random_delay_min=self.random_delay_min_spin.value(),
-                    random_delay_max=self.random_delay_max_spin.value(),
-                    operator_name=self.operator_name_input.text().strip(),
-                    report_to=self.report_to_input.text().strip() or DEFAULT_REPORT_TARGET,
-                    source_mode=SOURCE_MODE_JSON,
-                    dataset_type=DATASET_ALL,
-                    template_preview=str(payload.get("template_content") or "")[:50],
-                    json_writeback_enabled=True,
-                )
-                imported_jobs.append((Path(path).name, task_id, job_id, str(payload.get("start_time") or "")))
-                if str(payload.get("start_time") or "") in existing_schedule_times:
-                    conflict_files.append(Path(path).name)
-                existing_schedule_times.add(str(payload.get("start_time") or ""))
+                preview_items.append((path, payload))
             except Exception as exc:
                 skipped_files.append(f"{Path(path).name}（{exc}）")
 
-        self.refresh_scheduled_jobs()
+        if not preview_items and skipped_files:
+            QMessageBox.warning(self, "JSON 导入失败", "\n".join(skipped_files))
+            return
 
-        if imported_jobs:
-            summary_lines = [
-                f"{file_name} -> 任务快照 {task_id} / 定时任务 {job_id} / 开始时间 {start_time}"
-                for file_name, task_id, job_id, start_time in imported_jobs
-            ]
-            self.append_log("已导入 JSON 任务：" + "；".join(summary_lines))
-        if conflict_files:
-            conflict_text = "以下 JSON 起始时间与现有队列冲突，后续会等待并报警：\n" + "\n".join(conflict_files)
-            self.append_log(conflict_text)
+        scheduler_was_active = self.scheduler_timer.isActive()
+        if scheduler_was_active:
+            self.scheduler_timer.stop()
+
+        confirm_lines = [
+            f"{Path(path).name} -> 开始时间 {str(payload.get('start_time') or '')}"
+            for path, payload in preview_items
+        ]
+        confirm_parts = [
+            "确认导入以下 JSON 任务吗？",
+            "\n".join(confirm_lines),
+            "说明：导入后不会自动执行，必须在任务列表中选中后手动点击“开始发送”。",
+        ]
         if skipped_files:
-            self.append_log("以下 JSON 导入失败：" + "；".join(skipped_files))
+            confirm_parts.append("以下文件预检查失败，不会导入：\n" + "\n".join(skipped_files))
 
-        message_parts = []
-        if imported_jobs:
-            message_parts.append("成功导入：\n" + "\n".join(
-                f"{file_name} -> 定时任务 {job_id}（{start_time}）"
-                for file_name, _task_id, job_id, start_time in imported_jobs
-            ))
-        if conflict_files:
-            message_parts.append("检测到时间冲突（将排队等待）：\n" + "\n".join(conflict_files))
-        if skipped_files:
-            message_parts.append("导入失败：\n" + "\n".join(skipped_files))
+        reply = QMessageBox.question(
+            self,
+            "确认导入 JSON 任务",
+            "\n\n".join(confirm_parts),
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No,
+        )
+        if reply != QMessageBox.Yes:
+            self.append_log("已取消本次 JSON 导入。")
+            if scheduler_was_active:
+                self.scheduler_timer.start()
+            return
 
-        if not message_parts:
-            message_parts.append("没有导入任何 JSON 任务。")
+        imported_jobs: list[tuple[str, int, int, str]] = []
 
-        self.main_tabs.setCurrentWidget(self.execution_page)
-        QMessageBox.information(self, "JSON 导入结果", "\n\n".join(message_parts))
+        try:
+            for path, payload in preview_items:
+                try:
+                    task_id, job_id = self.local_store.create_json_task_from_payload(
+                        source_json_path=path,
+                        payload=payload,
+                        interval_seconds=self.interval_spin.value(),
+                        random_delay_min=self.random_delay_min_spin.value(),
+                        random_delay_max=self.random_delay_max_spin.value(),
+                        operator_name=self.operator_name_input.text().strip(),
+                        report_to=self.report_to_input.text().strip() or DEFAULT_REPORT_TARGET,
+                        source_mode=SOURCE_MODE_JSON,
+                        dataset_type=DATASET_ALL,
+                        template_preview=str(payload.get("template_content") or "")[:50],
+                        json_writeback_enabled=True,
+                    )
+                    imported_jobs.append((Path(path).name, task_id, job_id, str(payload.get("start_time") or "")))
+                except Exception as exc:
+                    skipped_files.append(f"{Path(path).name}（{exc}）")
+
+            self.refresh_scheduled_jobs()
+            if imported_jobs:
+                self.select_scheduled_job(imported_jobs[0][2])
+
+            if imported_jobs:
+                summary_lines = [
+                    f"{file_name} -> 任务快照 {task_id} / 定时任务 {job_id} / 开始时间 {start_time}"
+                    for file_name, task_id, job_id, start_time in imported_jobs
+                ]
+                self.append_log("已导入 JSON 任务：" + "；".join(summary_lines))
+            if skipped_files:
+                self.append_log("以下 JSON 导入失败：" + "；".join(skipped_files))
+
+            message_parts = []
+            if imported_jobs:
+                message_parts.append(
+                    "成功导入（不会自动执行）：\n"
+                    + "\n".join(
+                        f"{file_name} -> 定时任务 {job_id}（{start_time}）"
+                        for file_name, _task_id, job_id, start_time in imported_jobs
+                    )
+                )
+                message_parts.append("下一步：请在任务列表选中要执行的 JSON 任务，再手动点击“开始发送”。")
+            if skipped_files:
+                message_parts.append("导入失败：\n" + "\n".join(skipped_files))
+
+            if not message_parts:
+                message_parts.append("没有导入任何 JSON 任务。")
+
+            self.main_tabs.setCurrentWidget(self.execution_page)
+            QMessageBox.information(self, "JSON 导入结果", "\n\n".join(message_parts))
+        finally:
+            if scheduler_was_active:
+                self.scheduler_timer.start()
 
     def on_send_mode_changed(self, *_args) -> None:
         is_scheduled = self.scheduled_mode_radio.isChecked()
@@ -1520,9 +1562,40 @@ class ExcelSenderGUI(QWidget):
         return mapping.get(status, status)
 
     def get_schedule_status_text_for_job(self, job: ScheduledSendJob) -> str:
+        if job.task_kind == "json" and job.status == SCHEDULE_STATUS_PENDING:
+            return "待手动开始"
         if str(job.conflict_status or "").strip() == "waiting":
             return "等待中"
         return self.get_schedule_status_text(job.status)
+
+    def get_selected_scheduled_job(self) -> ScheduledSendJob | None:
+        selection_model = self.schedule_table.selectionModel()
+        if selection_model is None:
+            return None
+        selected_indexes = selection_model.selectedRows()
+        if not selected_indexes:
+            return None
+        job_item = self.schedule_table.item(selected_indexes[0].row(), 0)
+        if job_item is None:
+            return None
+        try:
+            selected_job_id = int(job_item.text())
+        except (TypeError, ValueError):
+            return None
+        for job in self.local_store.list_scheduled_jobs(limit=500):
+            if job.job_id == selected_job_id:
+                return job
+        return None
+
+    def select_scheduled_job(self, job_id: int) -> None:
+        for row_index in range(self.schedule_table.rowCount()):
+            job_item = self.schedule_table.item(row_index, 0)
+            if job_item is None:
+                continue
+            if str(job_item.text()).strip() == str(job_id):
+                self.schedule_table.selectRow(row_index)
+                self.schedule_table.setCurrentCell(row_index, 0)
+                return
 
     def cancel_selected_scheduled_job(self) -> None:
         selected_indexes = self.schedule_table.selectionModel().selectedRows()
@@ -1550,7 +1623,11 @@ class ExcelSenderGUI(QWidget):
             self.append_log(f"以下任务未取消（可能已开始或已结束）：{', '.join(skipped_ids)}")
 
     def poll_scheduled_jobs(self) -> None:
-        due_jobs = self.local_store.get_due_scheduled_jobs(datetime.now().strftime("%Y-%m-%d %H:%M:%S"), limit=20)
+        due_jobs = [
+            job
+            for job in self.local_store.get_due_scheduled_jobs(datetime.now().strftime("%Y-%m-%d %H:%M:%S"), limit=20)
+            if job.task_kind != "json"
+        ]
         if not due_jobs:
             return
 
@@ -2329,12 +2406,17 @@ class ExcelSenderGUI(QWidget):
         return valid_records, None
 
     def start_sending(self) -> None:
-        if self.scheduled_mode_radio.isChecked():
-            self.queue_scheduled_send()
-            return
-
         if self.send_thread is not None and self.send_thread.isRunning():
             QMessageBox.information(self, "发送中", "当前已有发送任务正在执行。")
+            return
+
+        selected_job = self.get_selected_scheduled_job()
+        if selected_job is not None and selected_job.task_kind == "json":
+            self.start_selected_json_job(selected_job)
+            return
+
+        if self.scheduled_mode_radio.isChecked():
+            self.queue_scheduled_send()
             return
 
         if self.template_change_timer.isActive():
@@ -2369,6 +2451,28 @@ class ExcelSenderGUI(QWidget):
             auto_report=self.auto_report_checkbox.isChecked(),
             scheduled_job=None,
         )
+
+    def start_selected_json_job(self, job: ScheduledSendJob) -> None:
+        if job.status != SCHEDULE_STATUS_PENDING:
+            QMessageBox.information(self, "无法开始", f"当前选中的 JSON 任务状态为“{self.get_schedule_status_text_for_job(job)}”，不能手动开始。")
+            return
+
+        reply = QMessageBox.question(
+            self,
+            "确认开始 JSON 任务",
+            (
+                f"准备立即手动开始 JSON 任务 {job.job_id}。\n"
+                f"计划时间：{job.scheduled_at}\n"
+                f"发送对象：{job.total_count}\n\n"
+                "确认后将立即执行，不再等待 start_time。"
+            ),
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No,
+        )
+        if reply != QMessageBox.Yes:
+            return
+
+        self.execute_scheduled_job(job)
 
     def queue_scheduled_send(self) -> None:
         if self.template_change_timer.isActive():
@@ -2537,7 +2641,6 @@ class ExcelSenderGUI(QWidget):
         self.start_button.setEnabled(False)
         self.stop_button.setEnabled(True)
         self.preview_button.setEnabled(False)
-        self.confirm_task_button.setEnabled(False)
         self.load_excel_button.setEnabled(False)
         self.import_local_button.setEnabled(False)
         self.preview_table.setEnabled(False)
