@@ -2,8 +2,10 @@ import json
 import os
 import sys
 import re
+import inspect
 from datetime import datetime
 from pathlib import Path
+from typing import Any
 
 from PyQt5.QtCore import QDateTime, Qt, QTimer
 from PyQt5.QtGui import QFont
@@ -58,23 +60,47 @@ from local_contact_store import (
 )
 from module import ContactConfirmDialog, FileDropLineEdit
 
+try:
+    import json_task_io as json_task_helper
+except Exception:
+    json_task_helper = None
+
 
 DISPLAY_NAME_OVERRIDE_KEY = "__display_name_override"
 RECORD_ID_KEY = "__record_id"
 TASK_ITEM_ID_KEY = "__task_item_id"
 TARGET_VALUE_KEY = "__target_value"
+ROW_ATTACHMENTS_KEY = "attachments"
+ROW_ATTACHMENT_MODE_KEY = "attachment_mode"
+ROW_TARGET_TYPE_KEY = "target_type"
+ROW_MESSAGE_MODE_KEY = "message_mode"
+ROW_SEND_STATUS_KEY = "send_status"
+ROW_ATTACHMENT_STATUS_KEY = "attachment_status"
+ROW_ERROR_MSG_KEY = "error_msg"
+ROW_SEND_TIME_KEY = "send_time"
 SOURCE_MODE_FILE = STORE_SOURCE_MODE_FILE
 SOURCE_MODE_LOCAL_DB = STORE_SOURCE_MODE_LOCAL_DB
+SOURCE_MODE_JSON = "json"
 DEFAULT_LOCAL_FILTER_FIELDS = ("显示名称", "备注", "昵称", "标签", "详细描述")
 LOCAL_DB_HEADER_TITLE = "微信搜索关键词"
+JSON_HEADER_TITLE = "发送对象"
+ALLOWED_ATTACHMENT_SUFFIXES = (".pdf", ".jpg", ".jpeg", ".png", ".bmp", ".webp")
+JSON_TIME_FORMAT = "%Y-%m-%d %H:%M:%S"
 
 
 class ExcelSenderGUI(QWidget):
-    def __init__(self):
+    def __init__(
+        self,
+        *,
+        config_path: str = "excel_sender_config.json",
+        db_path: str | None = None,
+        start_scheduler: bool = True,
+    ):
         super().__init__()
-        self.config_path = "excel_sender_config.json"
+        self.config_path = config_path
         self.config = self.load_config()
-        self.local_store = LocalContactStore(self.config["local_store"]["db_path"])
+        resolved_db_path = db_path or self.config["local_store"]["db_path"]
+        self.local_store = LocalContactStore(resolved_db_path)
         self.records: list[dict[str, str]] = []
         self.source_records: list[dict[str, str]] = []
         self.filtered_records: list[dict[str, str]] = []
@@ -87,6 +113,13 @@ class ExcelSenderGUI(QWidget):
         self.current_task_id: int | None = None
         self.current_batch_ids: dict[str, int] = {}
         self.active_scheduled_job: ScheduledSendJob | None = None
+        self.common_attachments: list[dict[str, str]] = []
+        self.json_job_source_paths: dict[int, str] = {}
+        self.json_conflict_warned_job_ids: set[int] = set()
+        self.current_runtime_task_id: int | None = None
+        self.current_runtime_records: list[dict[str, Any]] = []
+        self.current_runtime_source_json_path = ""
+        self.current_runtime_log_path = ""
         self._startup_layout_refreshed = False
         self._updating_preview_table = False
         self.template_change_timer = QTimer(self)
@@ -98,7 +131,8 @@ class ExcelSenderGUI(QWidget):
 
         self.init_ui()
         self.restore_initial_state()
-        self.scheduler_timer.start()
+        if start_scheduler:
+            self.scheduler_timer.start()
 
     def load_config(self) -> dict:
         if os.path.exists(self.config_path):
@@ -127,6 +161,9 @@ class ExcelSenderGUI(QWidget):
         template_config = config.setdefault("template", {})
         if "text" not in template_config:
             template_config["text"] = ""
+            changed = True
+        if "common_attachments" not in template_config:
+            template_config["common_attachments"] = []
             changed = True
 
         filter_config = config.setdefault("filter", {})
@@ -168,15 +205,32 @@ class ExcelSenderGUI(QWidget):
             bulk_send_config["send_mode"] = "immediate"
             changed = True
 
+        json_task_config = config.setdefault("json_tasks", {})
+        if "last_import_dir" not in json_task_config:
+            json_task_config["last_import_dir"] = ""
+            changed = True
+        if "last_export_dir" not in json_task_config:
+            json_task_config["last_export_dir"] = ""
+            changed = True
+        if "last_attachment_dir" not in json_task_config:
+            json_task_config["last_attachment_dir"] = ""
+            changed = True
+
         if changed:
-            with open(self.config_path, "w", encoding="utf-8") as file:
-                json.dump(config, file, indent=4, ensure_ascii=False)
+            try:
+                with open(self.config_path, "w", encoding="utf-8") as file:
+                    json.dump(config, file, indent=4, ensure_ascii=False)
+            except OSError:
+                pass
 
         return config
 
     def save_config(self) -> None:
-        with open(self.config_path, "w", encoding="utf-8") as file:
-            json.dump(self.config, file, indent=4, ensure_ascii=False)
+        try:
+            with open(self.config_path, "w", encoding="utf-8") as file:
+                json.dump(self.config, file, indent=4, ensure_ascii=False)
+        except OSError:
+            pass
 
     def init_ui(self) -> None:
         self.setWindowTitle("EasyChat Excel 个性化群发")
@@ -525,6 +579,48 @@ class ExcelSenderGUI(QWidget):
         self.placeholder_status_label.setWordWrap(True)
         layout.addWidget(self.placeholder_status_label)
 
+        attachment_title = QLabel("通用附件（PDF/图片）")
+        attachment_title.setStyleSheet("font-weight: 600;")
+        layout.addWidget(attachment_title)
+
+        attachment_path_layout = QHBoxLayout()
+        self.common_attachment_input = FileDropLineEdit(
+            allow_multiple=True,
+            suffixes=list(ALLOWED_ATTACHMENT_SUFFIXES),
+            parent=self,
+        )
+        self.common_attachment_input.setPlaceholderText("拖入附件或输入路径（多文件用分号分隔）")
+        attachment_path_layout.addWidget(self.common_attachment_input)
+
+        choose_attachment_button = QPushButton("选择附件")
+        choose_attachment_button.clicked.connect(self.select_common_attachments)
+        attachment_path_layout.addWidget(choose_attachment_button)
+
+        add_attachment_button = QPushButton("添加到通用附件")
+        add_attachment_button.clicked.connect(self.import_common_attachments_from_input)
+        attachment_path_layout.addWidget(add_attachment_button)
+        layout.addLayout(attachment_path_layout)
+
+        attachment_action_layout = QHBoxLayout()
+        self.remove_common_attachment_button = QPushButton("删除选中附件")
+        self.remove_common_attachment_button.clicked.connect(self.remove_selected_common_attachments)
+        self.clear_common_attachment_button = QPushButton("清空通用附件")
+        self.clear_common_attachment_button.clicked.connect(self.clear_common_attachments)
+        attachment_action_layout.addWidget(self.remove_common_attachment_button)
+        attachment_action_layout.addWidget(self.clear_common_attachment_button)
+        attachment_action_layout.addStretch(1)
+        layout.addLayout(attachment_action_layout)
+
+        self.common_attachment_table = QTableWidget(0, 2, self)
+        self.common_attachment_table.setHorizontalHeaderLabels(["类型", "路径"])
+        self.common_attachment_table.verticalHeader().setVisible(False)
+        self.common_attachment_table.setSelectionBehavior(QAbstractItemView.SelectRows)
+        self.common_attachment_table.setEditTriggers(QAbstractItemView.NoEditTriggers)
+        self.common_attachment_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeToContents)
+        self.common_attachment_table.horizontalHeader().setSectionResizeMode(1, QHeaderView.Stretch)
+        self.common_attachment_table.setMinimumHeight(120)
+        layout.addWidget(self.common_attachment_table)
+
         return group
 
     def build_filter_group(self) -> QGroupBox:
@@ -608,6 +704,12 @@ class ExcelSenderGUI(QWidget):
         self.stop_button.setEnabled(False)
         self.stop_button.clicked.connect(self.stop_sending)
 
+        self.export_json_button = QPushButton("导出 JSON")
+        self.export_json_button.clicked.connect(self.export_current_plan_to_json)
+
+        self.import_json_button = QPushButton("导入 JSON（多选）")
+        self.import_json_button.clicked.connect(self.import_json_tasks)
+
         self.send_status_label = QLabel("等待发送。")
         self.send_status_label.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
 
@@ -615,6 +717,8 @@ class ExcelSenderGUI(QWidget):
         layout.addWidget(self.interval_spin)
         layout.addWidget(self.preview_button)
         layout.addWidget(self.confirm_task_button)
+        layout.addWidget(self.export_json_button)
+        layout.addWidget(self.import_json_button)
         layout.addWidget(self.start_button)
         layout.addWidget(self.stop_button)
         layout.addStretch(1)
@@ -690,6 +794,8 @@ class ExcelSenderGUI(QWidget):
         self.filter_pattern_input.setText(self.config["filter"]["pattern"])
         self.filter_ignore_case_checkbox.setChecked(self.config["filter"]["ignore_case"])
         self.template_input.setPlainText(self.config["template"]["text"])
+        self.common_attachments = self.normalize_attachment_items(self.config["template"].get("common_attachments", []))
+        self.refresh_common_attachment_table()
         self.interval_spin.setValue(self.config["settings"]["send_interval"])
         bulk_send = self.config["bulk_send"]
         self.random_delay_min_spin.setValue(int(bulk_send["random_delay_min"]))
@@ -915,6 +1021,10 @@ class ExcelSenderGUI(QWidget):
         self.current_batch_id = batch_id
         self.current_batch_ids = dict(batch_ids or {})
         self.current_task_id = None
+        self.current_runtime_task_id = None
+        self.current_runtime_records = []
+        self.current_runtime_source_json_path = ""
+        self.current_runtime_log_path = ""
         self.source_records = self.attach_record_ids(records)
         self.filtered_records = list(self.source_records)
         self.records = list(self.filtered_records)
@@ -984,6 +1094,374 @@ class ExcelSenderGUI(QWidget):
         self.config["bulk_send"]["auto_report_enabled"] = self.auto_report_checkbox.isChecked()
         self.save_config()
 
+    def normalize_attachment_items(self, raw_items: Any) -> list[dict[str, str]]:
+        if json_task_helper is not None:
+            try:
+                return [
+                    dict(item)
+                    for item in json_task_helper.normalize_attachment_list(raw_items, validate_exists=True)
+                ]
+            except Exception:
+                pass
+
+        if raw_items in (None, ""):
+            return []
+        if isinstance(raw_items, dict):
+            raw_items = [raw_items]
+        elif isinstance(raw_items, str):
+            raw_items = [segment.strip() for segment in raw_items.split(";") if segment.strip()]
+        elif not isinstance(raw_items, list):
+            raw_items = list(raw_items)
+
+        normalized: list[dict[str, str]] = []
+        for item in raw_items:
+            if isinstance(item, dict):
+                file_path = str(item.get("file_path") or item.get("path") or "").strip()
+                file_type = str(item.get("file_type") or "").strip().lower()
+            else:
+                file_path = str(item or "").strip()
+                file_type = ""
+
+            if file_path == "":
+                continue
+            resolved_path = str(Path(file_path).expanduser().resolve(strict=False))
+            if not Path(resolved_path).exists():
+                raise ValueError(f"附件不存在：{resolved_path}")
+            file_type = file_type or self.infer_attachment_type(resolved_path)
+            if file_type == "":
+                raise ValueError(f"附件类型不合法：{resolved_path}")
+            normalized.append(
+                {
+                    "file_path": resolved_path,
+                    "file_type": file_type,
+                }
+            )
+        return normalized
+
+    def infer_attachment_type(self, file_path: str) -> str:
+        suffix = Path(file_path).suffix.lower()
+        if suffix == ".pdf":
+            return "pdf"
+        if suffix in {".jpg", ".jpeg", ".png", ".bmp", ".webp"}:
+            return "image"
+        return ""
+
+    def refresh_common_attachment_table(self) -> None:
+        if not hasattr(self, "common_attachment_table"):
+            return
+        self.common_attachment_table.setRowCount(len(self.common_attachments))
+        for row_index, item in enumerate(self.common_attachments):
+            self.common_attachment_table.setItem(row_index, 0, QTableWidgetItem(str(item.get("file_type") or "")))
+            self.common_attachment_table.setItem(row_index, 1, QTableWidgetItem(str(item.get("file_path") or "")))
+        self.common_attachment_table.resizeRowsToContents()
+        self.remove_common_attachment_button.setEnabled(bool(self.common_attachments))
+        self.clear_common_attachment_button.setEnabled(bool(self.common_attachments))
+
+    def save_common_attachments_to_config(self) -> None:
+        self.config["template"]["common_attachments"] = [dict(item) for item in self.common_attachments]
+        self.save_config()
+
+    def select_common_attachments(self) -> None:
+        start_dir = (
+            self.config.get("json_tasks", {}).get("last_attachment_dir")
+            or self.config.get("json_tasks", {}).get("last_import_dir")
+            or ""
+        )
+        paths, _ = QFileDialog.getOpenFileNames(
+            self,
+            "选择通用附件",
+            start_dir,
+            "附件文件(*.pdf *.jpg *.jpeg *.png *.bmp *.webp)",
+        )
+        if not paths:
+            return
+        self.config["json_tasks"]["last_attachment_dir"] = str(Path(paths[0]).parent)
+        self.save_config()
+        self.common_attachment_input.setText(";".join(paths))
+
+    def import_common_attachments_from_input(self) -> None:
+        raw_value = self.common_attachment_input.text().strip()
+        if raw_value == "":
+            QMessageBox.information(self, "未选择附件", "请先选择或拖入至少一个附件。")
+            return
+        try:
+            new_items = self.normalize_attachment_items(raw_value)
+        except Exception as exc:
+            QMessageBox.warning(self, "附件无效", str(exc))
+            return
+
+        existing_paths = {str(item.get("file_path") or "") for item in self.common_attachments}
+        for item in new_items:
+            file_path = str(item.get("file_path") or "")
+            if file_path and file_path not in existing_paths:
+                self.common_attachments.append(item)
+                existing_paths.add(file_path)
+        self.common_attachment_input.clear()
+        self.refresh_common_attachment_table()
+        self.save_common_attachments_to_config()
+        self.append_log(f"已更新通用附件，共 {len(self.common_attachments)} 个。")
+
+    def remove_selected_common_attachments(self) -> None:
+        if not self.common_attachments:
+            return
+        rows = sorted({index.row() for index in self.common_attachment_table.selectionModel().selectedRows()}, reverse=True)
+        if not rows:
+            QMessageBox.information(self, "未选择附件", "请先在通用附件表中选择要删除的附件。")
+            return
+        for row in rows:
+            if 0 <= row < len(self.common_attachments):
+                self.common_attachments.pop(row)
+        self.refresh_common_attachment_table()
+        self.save_common_attachments_to_config()
+
+    def clear_common_attachments(self) -> None:
+        if not self.common_attachments:
+            return
+        self.common_attachments = []
+        self.refresh_common_attachment_table()
+        self.save_common_attachments_to_config()
+
+    def extract_row_custom_attachments(self, row: dict[str, Any]) -> list[dict[str, str]]:
+        return self.normalize_attachment_items(row.get(ROW_ATTACHMENTS_KEY) or row.get("custom_attachments") or [])
+
+    def set_row_custom_attachments(self, row_index: int, attachments: list[dict[str, str]] | None) -> None:
+        if row_index < 0 or row_index >= len(self.records):
+            return
+        record = self.records[row_index]
+        attachment_list = [dict(item) for item in (attachments or [])]
+        if attachment_list:
+            record[ROW_ATTACHMENT_MODE_KEY] = "custom"
+            record[ROW_ATTACHMENTS_KEY] = attachment_list
+        else:
+            record[ROW_ATTACHMENT_MODE_KEY] = "common"
+            record.pop(ROW_ATTACHMENTS_KEY, None)
+            record.pop("custom_attachments", None)
+
+        if self.current_task_id is not None:
+            task_item_id = record.get(TASK_ITEM_ID_KEY)
+            if task_item_id:
+                self.local_store.update_task_item(int(str(task_item_id)), record)
+        self.render_preview()
+
+    def edit_row_attachments(self, row_index: int) -> None:
+        if row_index < 0 or row_index >= len(self.records):
+            return
+        record = self.records[row_index]
+        existing_custom = self.extract_row_custom_attachments(record)
+        if existing_custom:
+            message_box = QMessageBox(self)
+            message_box.setWindowTitle("自定义附件")
+            message_box.setText("当前目标已设置自定义附件，要如何处理？")
+            select_button = message_box.addButton("重新选择附件", QMessageBox.AcceptRole)
+            restore_button = message_box.addButton("恢复通用附件", QMessageBox.DestructiveRole)
+            message_box.addButton("取消", QMessageBox.RejectRole)
+            message_box.exec_()
+            clicked = message_box.clickedButton()
+            if clicked == restore_button:
+                self.set_row_custom_attachments(row_index, [])
+                return
+            if clicked != select_button:
+                return
+
+        start_dir = (
+            self.config.get("json_tasks", {}).get("last_attachment_dir")
+            or self.config.get("json_tasks", {}).get("last_import_dir")
+            or ""
+        )
+        paths, _ = QFileDialog.getOpenFileNames(
+            self,
+            "选择当前目标的自定义附件",
+            start_dir,
+            "附件文件(*.pdf *.jpg *.jpeg *.png *.bmp *.webp)",
+        )
+        if not paths:
+            return
+        self.config["json_tasks"]["last_attachment_dir"] = str(Path(paths[0]).parent)
+        self.save_config()
+        try:
+            attachments = self.normalize_attachment_items(paths)
+        except Exception as exc:
+            QMessageBox.warning(self, "附件无效", str(exc))
+            return
+        self.set_row_custom_attachments(row_index, attachments)
+
+    def choose_json_start_time_text(self) -> str:
+        if self.scheduled_mode_radio.isChecked():
+            return self.scheduled_time_edit.dateTime().toString("yyyy-MM-dd HH:mm:00")
+        return datetime.now().strftime(JSON_TIME_FORMAT)
+
+    def infer_target_type(self, row: dict[str, Any]) -> str:
+        explicit_type = str(row.get(ROW_TARGET_TYPE_KEY) or row.get("target_type") or "").strip().lower()
+        if explicit_type in {"person", "group"}:
+            return explicit_type
+        row_type = str(row.get("类型") or "").strip()
+        if row_type == "群聊":
+            return "group"
+        if row_type == "好友":
+            return "person"
+        username = str(row.get("用户名") or "").strip()
+        if username.endswith("@chatroom"):
+            return "group"
+        if username:
+            return "person"
+        return ""
+
+    def build_target_payload(self, row: dict[str, Any], *, index: int) -> dict[str, Any]:
+        target_value = self.get_send_target_value(row)
+        if target_value == "":
+            raise ValueError(f"第 {index + 1} 行缺少可发送的目标值。")
+
+        target_type = self.infer_target_type(row)
+        if target_type == "":
+            raise ValueError(f"第 {index + 1} 行无法识别 target_type，请补齐“类型”列或“用户名”信息。")
+
+        custom_message = str(row.get(CUSTOM_MESSAGE_OVERRIDE_KEY, "") or "")
+        message_mode = "custom" if custom_message.strip() else "template"
+        custom_attachments = self.extract_row_custom_attachments(row)
+        attachment_mode = "custom" if custom_attachments else "common"
+
+        payload = {
+            "target_value": target_value,
+            "target_type": target_type,
+            "message_mode": message_mode,
+            "message": custom_message if message_mode == "custom" else "",
+            "attachment_mode": attachment_mode,
+            "attachments": custom_attachments,
+            "display_name": self.get_display_name(row),
+            "send_status": str(row.get(ROW_SEND_STATUS_KEY) or "").strip().lower() or "pending",
+            "attachment_status": str(row.get(ROW_ATTACHMENT_STATUS_KEY) or "").strip().lower() or "none",
+            "error_msg": str(row.get(ROW_ERROR_MSG_KEY) or ""),
+            "send_time": str(row.get(ROW_SEND_TIME_KEY) or ""),
+            "source_target_index": int(row.get("source_json_index") or row.get("source_target_index") or (index + 1)),
+        }
+        return payload
+
+    def build_json_task_payload(self, records: list[dict[str, Any]]) -> dict[str, Any]:
+        targets = [self.build_target_payload(row, index=index) for index, row in enumerate(records)]
+        return {
+            "start_time": self.choose_json_start_time_text(),
+            "end_time": "",
+            "total_count": len(targets),
+            "template_content": self.template_input.toPlainText(),
+            "common_attachments": [dict(item) for item in self.common_attachments],
+            "targets": targets,
+        }
+
+    def export_current_plan_to_json(self) -> None:
+        records, error_message = self.validate_before_send()
+        if error_message is not None:
+            QMessageBox.warning(self, "无法导出 JSON", error_message)
+            return
+        assert records is not None
+        try:
+            payload = self.build_json_task_payload(records)
+        except Exception as exc:
+            QMessageBox.warning(self, "无法导出 JSON", str(exc))
+            return
+
+        start_dir = self.config.get("json_tasks", {}).get("last_export_dir") or ""
+        path, _ = QFileDialog.getSaveFileName(
+            self,
+            "导出 JSON",
+            str(Path(start_dir) / "wechat-task.json") if start_dir else "wechat-task.json",
+            "JSON 文件(*.json)",
+        )
+        if not path:
+            return
+
+        try:
+            if json_task_helper is not None:
+                json_task_helper.dump_json_task_file(path, payload, create_backup=False)
+            else:
+                with open(path, "w", encoding="utf-8") as handle:
+                    json.dump(payload, handle, ensure_ascii=False, indent=2)
+        except Exception as exc:
+            QMessageBox.warning(self, "导出失败", f"导出 JSON 失败：{exc}")
+            return
+
+        self.config["json_tasks"]["last_export_dir"] = str(Path(path).parent)
+        self.save_config()
+        self.append_log(f"已导出 JSON：{path}")
+        QMessageBox.information(self, "导出成功", f"JSON 已导出到：\n{path}")
+
+    def import_json_tasks(self) -> None:
+        start_dir = self.config.get("json_tasks", {}).get("last_import_dir") or ""
+        paths, _ = QFileDialog.getOpenFileNames(
+            self,
+            "导入 JSON 任务",
+            start_dir,
+            "JSON 文件(*.json)",
+        )
+        if not paths:
+            return
+
+        self.config["json_tasks"]["last_import_dir"] = str(Path(paths[0]).parent)
+        self.save_config()
+
+        existing_jobs = self.local_store.list_scheduled_jobs(limit=500)
+        existing_schedule_times = {job.scheduled_at for job in existing_jobs if job.scheduled_at}
+        imported_jobs: list[tuple[str, int, int, str]] = []
+        conflict_files: list[str] = []
+        skipped_files: list[str] = []
+
+        for path in paths:
+            try:
+                if json_task_helper is not None:
+                    payload = json_task_helper.load_json_task_file(path)
+                else:
+                    with open(path, "r", encoding="utf-8") as handle:
+                        payload = json.load(handle)
+                task_id, job_id = self.local_store.create_json_task_from_payload(
+                    source_json_path=path,
+                    payload=payload,
+                    interval_seconds=self.interval_spin.value(),
+                    random_delay_min=self.random_delay_min_spin.value(),
+                    random_delay_max=self.random_delay_max_spin.value(),
+                    operator_name=self.operator_name_input.text().strip(),
+                    report_to=self.report_to_input.text().strip() or DEFAULT_REPORT_TARGET,
+                    source_mode=SOURCE_MODE_JSON,
+                    dataset_type=DATASET_ALL,
+                    template_preview=str(payload.get("template_content") or "")[:50],
+                    json_writeback_enabled=True,
+                )
+                imported_jobs.append((Path(path).name, task_id, job_id, str(payload.get("start_time") or "")))
+                if str(payload.get("start_time") or "") in existing_schedule_times:
+                    conflict_files.append(Path(path).name)
+                existing_schedule_times.add(str(payload.get("start_time") or ""))
+            except Exception as exc:
+                skipped_files.append(f"{Path(path).name}（{exc}）")
+
+        self.refresh_scheduled_jobs()
+
+        if imported_jobs:
+            summary_lines = [
+                f"{file_name} -> 任务快照 {task_id} / 定时任务 {job_id} / 开始时间 {start_time}"
+                for file_name, task_id, job_id, start_time in imported_jobs
+            ]
+            self.append_log("已导入 JSON 任务：" + "；".join(summary_lines))
+        if conflict_files:
+            conflict_text = "以下 JSON 起始时间与现有队列冲突，后续会等待并报警：\n" + "\n".join(conflict_files)
+            self.append_log(conflict_text)
+        if skipped_files:
+            self.append_log("以下 JSON 导入失败：" + "；".join(skipped_files))
+
+        message_parts = []
+        if imported_jobs:
+            message_parts.append("成功导入：\n" + "\n".join(
+                f"{file_name} -> 定时任务 {job_id}（{start_time}）"
+                for file_name, _task_id, job_id, start_time in imported_jobs
+            ))
+        if conflict_files:
+            message_parts.append("检测到时间冲突（将排队等待）：\n" + "\n".join(conflict_files))
+        if skipped_files:
+            message_parts.append("导入失败：\n" + "\n".join(skipped_files))
+
+        if not message_parts:
+            message_parts.append("没有导入任何 JSON 任务。")
+
+        self.main_tabs.setCurrentWidget(self.execution_page)
+        QMessageBox.information(self, "JSON 导入结果", "\n\n".join(message_parts))
+
     def on_send_mode_changed(self, *_args) -> None:
         is_scheduled = self.scheduled_mode_radio.isChecked()
         self.scheduled_time_edit.setEnabled(is_scheduled)
@@ -1002,15 +1480,32 @@ class ExcelSenderGUI(QWidget):
 
     def refresh_scheduled_jobs(self) -> None:
         jobs = self.local_store.list_scheduled_jobs()
+        self.json_job_source_paths = {}
         self.schedule_table.setRowCount(len(jobs))
         for row_index, job in enumerate(jobs):
             self.schedule_table.setItem(row_index, 0, QTableWidgetItem(str(job.job_id)))
             self.schedule_table.setItem(row_index, 1, QTableWidgetItem(job.scheduled_at))
-            self.schedule_table.setItem(row_index, 2, QTableWidgetItem(self.get_schedule_status_text(job.status)))
+            status_item = QTableWidgetItem(self.get_schedule_status_text_for_job(job))
+            if job.wait_reason:
+                status_item.setToolTip(job.wait_reason)
+            self.schedule_table.setItem(row_index, 2, status_item)
             self.schedule_table.setItem(row_index, 3, QTableWidgetItem(str(job.total_count)))
-            source_text = "Excel" if job.source_mode == SOURCE_MODE_FILE else job.dataset_label
-            self.schedule_table.setItem(row_index, 4, QTableWidgetItem(source_text))
-            self.schedule_table.setItem(row_index, 5, QTableWidgetItem(job.template_preview or ""))
+            if job.task_kind == "json":
+                source_text = f"JSON:{job.source_json_name or Path(job.source_json_path or '').name}"
+            elif job.source_mode == SOURCE_MODE_FILE:
+                source_text = "Excel"
+            else:
+                source_text = job.dataset_label
+            source_item = QTableWidgetItem(source_text)
+            if job.source_json_path:
+                source_item.setToolTip(job.source_json_path)
+                self.json_job_source_paths[job.job_id] = job.source_json_path
+            self.schedule_table.setItem(row_index, 4, source_item)
+
+            preview_text = job.template_preview or ""
+            if job.wait_reason:
+                preview_text = (preview_text + " | " if preview_text else "") + job.wait_reason
+            self.schedule_table.setItem(row_index, 5, QTableWidgetItem(preview_text))
 
         self.schedule_table.resizeRowsToContents()
 
@@ -1023,6 +1518,11 @@ class ExcelSenderGUI(QWidget):
             SCHEDULE_STATUS_FAILED: "失败",
         }
         return mapping.get(status, status)
+
+    def get_schedule_status_text_for_job(self, job: ScheduledSendJob) -> str:
+        if str(job.conflict_status or "").strip() == "waiting":
+            return "等待中"
+        return self.get_schedule_status_text(job.status)
 
     def cancel_selected_scheduled_job(self) -> None:
         selected_indexes = self.schedule_table.selectionModel().selectedRows()
@@ -1050,11 +1550,18 @@ class ExcelSenderGUI(QWidget):
             self.append_log(f"以下任务未取消（可能已开始或已结束）：{', '.join(skipped_ids)}")
 
     def poll_scheduled_jobs(self) -> None:
-        if self.send_thread is not None and self.send_thread.isRunning():
+        due_jobs = self.local_store.get_due_scheduled_jobs(datetime.now().strftime("%Y-%m-%d %H:%M:%S"), limit=20)
+        if not due_jobs:
             return
 
-        due_jobs = self.local_store.get_due_scheduled_jobs(datetime.now().strftime("%Y-%m-%d %H:%M:%S"), limit=1)
-        if not due_jobs:
+        if self.send_thread is not None and self.send_thread.isRunning():
+            for due_job in due_jobs:
+                wait_reason = f"任务 {due_job.job_id} 到点，但当前仍有任务执行中，已进入等待队列。"
+                should_notify = not bool(due_job.conflict_notified)
+                self.local_store.mark_job_waiting_conflict(due_job.job_id, wait_reason, notify=should_notify)
+                if should_notify:
+                    self.append_log(wait_reason)
+            self.refresh_scheduled_jobs()
             return
 
         self.execute_scheduled_job(due_jobs[0])
@@ -1421,7 +1928,12 @@ class ExcelSenderGUI(QWidget):
     def update_preview_headers(self) -> None:
         if not hasattr(self, "preview_table"):
             return
-        first_header = LOCAL_DB_HEADER_TITLE if self.is_local_db_mode() else self.get_send_target_column()
+        if self.active_source_mode == SOURCE_MODE_JSON:
+            first_header = JSON_HEADER_TITLE
+        elif self.is_local_db_mode():
+            first_header = LOCAL_DB_HEADER_TITLE
+        else:
+            first_header = self.get_send_target_column()
         self.preview_table.setHorizontalHeaderLabels([first_header, "显示名称", "发送消息", "操作"])
 
     def update_send_target_column_status(self) -> None:
@@ -1603,10 +2115,22 @@ class ExcelSenderGUI(QWidget):
             self.preview_table.setItem(row_index, 1, display_item)
             self.preview_table.setItem(row_index, 2, message_item)
 
-            delete_button = QPushButton("删除", self.preview_table)
+            operation_widget = QWidget(self.preview_table)
+            operation_layout = QHBoxLayout(operation_widget)
+            operation_layout.setContentsMargins(0, 0, 0, 0)
+            operation_layout.setSpacing(6)
+
+            attachment_button = QPushButton("附件", operation_widget)
+            attachment_button.clicked.connect(lambda _, index=row_index: self.edit_row_attachments(index))
+            attachment_button.setEnabled(allow_edit)
+            operation_layout.addWidget(attachment_button)
+
+            delete_button = QPushButton("删除", operation_widget)
             delete_button.clicked.connect(lambda _, index=row_index: self.delete_preview_row(index))
             delete_button.setEnabled(allow_edit)
-            self.preview_table.setCellWidget(row_index, 3, delete_button)
+            operation_layout.addWidget(delete_button)
+            operation_layout.addStretch(1)
+            self.preview_table.setCellWidget(row_index, 3, operation_widget)
 
         self.preview_table.resizeRowsToContents()
         self.preview_table.blockSignals(False)
@@ -1780,8 +2304,12 @@ class ExcelSenderGUI(QWidget):
                 for row in records
                 if CUSTOM_MESSAGE_OVERRIDE_KEY in row
             )
-            if not has_custom_messages:
-                return None, "请输入要发送的消息模板，或先在预览表中手动编辑每行消息。"
+            has_any_attachments = bool(self.common_attachments) or any(
+                bool(row.get(ROW_ATTACHMENTS_KEY))
+                for row in records
+            )
+            if not has_custom_messages and not has_any_attachments:
+                return None, "请输入要发送的消息模板，或先在预览表中手动编辑每行消息 / 附件。"
         else:
             placeholders = extract_placeholders(template)
             missing_fields = find_missing_fields(placeholders, self.columns)
@@ -1917,6 +2445,7 @@ class ExcelSenderGUI(QWidget):
             return
 
         self.local_store.mark_scheduled_job_running(job.job_id)
+        self.local_store.clear_job_waiting_conflict(job.job_id)
         self.refresh_scheduled_jobs()
         self.launch_send_thread(
             records=records,
@@ -1945,19 +2474,59 @@ class ExcelSenderGUI(QWidget):
         auto_report: bool,
         scheduled_job: ScheduledSendJob | None,
     ) -> None:
+        task_id = scheduled_job.task_id if scheduled_job is not None else self.current_task_id
+        if task_id is None:
+            task_id = self.create_task_snapshot_from_records(records)
+            self.current_task_id = task_id
+
+        task_details = self.local_store.get_task_details(task_id)
+        common_attachments = self.common_attachments
+        if task_details is not None and task_details.get("common_attachments_json"):
+            common_attachments = self.normalize_attachment_items(task_details["common_attachments_json"])
+
+        source_json_path = ""
+        if scheduled_job is not None:
+            source_json_path = str(scheduled_job.source_json_path or "")
+        if not source_json_path and task_details is not None:
+            source_json_path = str(task_details.get("source_json_path") or "")
+
+        log_path = ""
+        if scheduled_job is not None:
+            log_path = str(scheduled_job.log_path or "")
+        if not log_path and task_details is not None:
+            log_path = str(task_details.get("json_log_path") or "")
+        if not log_path:
+            log_path = self.resolve_runtime_log_path(task_id, source_json_path)
+
         self.active_scheduled_job = scheduled_job
-        self.send_thread = PersonalizedSendThread(
-            records=records,
-            template=template_text,
-            interval_seconds=interval_seconds,
-            target_column=target_column,
-            locale=self.config["settings"]["language"],
-            random_delay_min=random_delay_min,
-            random_delay_max=random_delay_max,
-            operator_name=operator_name,
-            report_to=report_to,
-            auto_report=auto_report,
-        )
+        self.current_runtime_task_id = task_id
+        self.current_runtime_records = [dict(row) for row in records]
+        self.current_runtime_source_json_path = source_json_path
+        self.current_runtime_log_path = log_path
+
+        thread_kwargs = {
+            "records": records,
+            "template": template_text,
+            "interval_seconds": interval_seconds,
+            "target_column": target_column,
+            "locale": self.config["settings"]["language"],
+            "random_delay_min": random_delay_min,
+            "random_delay_max": random_delay_max,
+            "operator_name": operator_name,
+            "report_to": report_to,
+            "auto_report": auto_report,
+            "common_attachments": common_attachments,
+            "target_result_callback": self.handle_target_result,
+            "target_log_callback": self.handle_target_log,
+            "summary_callback": self.handle_summary_result,
+        }
+        signature = inspect.signature(PersonalizedSendThread.__init__)
+        filtered_kwargs = {
+            key: value
+            for key, value in thread_kwargs.items()
+            if key in signature.parameters
+        }
+        self.send_thread = PersonalizedSendThread(**filtered_kwargs)
         self.send_thread.progress.connect(self.on_send_progress)
         self.send_thread.log.connect(self.append_log)
         self.send_thread.error.connect(self.on_send_error)
@@ -1978,6 +2547,8 @@ class ExcelSenderGUI(QWidget):
             self.append_log(f"开始执行定时任务 {scheduled_job.job_id}，任务快照 {scheduled_job.task_id}。")
         elif self.is_local_db_mode():
             self.append_log(f"开始执行本地库任务快照发送，任务ID={self.current_task_id}。")
+        elif self.active_source_mode == SOURCE_MODE_JSON:
+            self.append_log(f"开始执行 JSON 任务发送，任务ID={task_id}。")
         else:
             self.append_log("开始执行 Excel 个性化群发。")
 
@@ -2004,6 +2575,11 @@ class ExcelSenderGUI(QWidget):
             f"失败：{summary['failed']}\n"
             f"跳过：{summary['skipped']}"
         )
+        if summary.get("attachments_sent") is not None:
+            message += (
+                f"\n附件成功：{summary.get('attachments_sent', 0)}"
+                f"\n附件失败：{summary.get('attachments_failed', 0)}"
+            )
         if summary.get("random_delay_count"):
             message += f"\n随机延迟事务：{summary['random_delay_count']} 次"
         if summary.get("report_sent"):
@@ -2012,6 +2588,8 @@ class ExcelSenderGUI(QWidget):
             message += f"\n自动汇报失败：{summary['report_error']}"
         if summary.get("error"):
             message += f"\n线程异常：{summary['error']}"
+        if self.current_runtime_log_path:
+            message += f"\n日志文件：{self.current_runtime_log_path}"
         if summary.get("stopped"):
             message += "\n状态：已手动停止"
         else:
@@ -2047,12 +2625,175 @@ class ExcelSenderGUI(QWidget):
         self.preview_table.setEnabled(True)
         self.send_thread = None
         self.active_scheduled_job = None
+        self.current_runtime_task_id = None
+        self.current_runtime_records = []
+        self.current_runtime_source_json_path = ""
+        self.current_runtime_log_path = ""
         self.refresh_scheduled_jobs()
         self.update_action_button_state()
 
     def append_log(self, message: str) -> None:
         self.log_view.appendPlainText(message)
         self.log_view.verticalScrollBar().setValue(self.log_view.verticalScrollBar().maximum())
+
+    def resolve_runtime_log_path(self, task_id: int, source_json_path: str = "") -> str:
+        if json_task_helper is not None:
+            try:
+                return str(json_task_helper.build_log_path(source_json_path or None, task_id=task_id))
+            except Exception:
+                pass
+        logs_dir = Path("logs")
+        logs_dir.mkdir(parents=True, exist_ok=True)
+        if source_json_path:
+            source_path = Path(source_json_path)
+            return str(source_path.with_name(f"{source_path.stem}.easychat.log"))
+        return str((logs_dir / f"easychat-task-{task_id}.log").resolve(strict=False))
+
+    def handle_target_result(self, row_result: dict[str, Any]) -> None:
+        if self.current_runtime_task_id is None:
+            return
+        index = int(row_result.get("index") or 0) - 1
+        if index < 0 or index >= len(self.current_runtime_records):
+            return
+
+        record = self.current_runtime_records[index]
+        record[ROW_SEND_STATUS_KEY] = str(row_result.get("send_status") or "")
+        record[ROW_ATTACHMENT_STATUS_KEY] = str(row_result.get("attachment_status") or "")
+        record[ROW_ERROR_MSG_KEY] = str(row_result.get("error_msg") or "")
+        record[ROW_SEND_TIME_KEY] = str(row_result.get("send_time") or "")
+        record["attachment_details"] = list(row_result.get("attachments") or [])
+        self.current_runtime_records[index] = record
+
+        task_item_id = record.get(TASK_ITEM_ID_KEY)
+        if task_item_id:
+            try:
+                self.local_store.update_task_item_result(
+                    int(str(task_item_id)),
+                    send_status=record[ROW_SEND_STATUS_KEY],
+                    send_time=record[ROW_SEND_TIME_KEY],
+                    error_msg=record[ROW_ERROR_MSG_KEY],
+                    attachment_status=record[ROW_ATTACHMENT_STATUS_KEY],
+                    attachments=record.get(ROW_ATTACHMENTS_KEY) if record.get(ROW_ATTACHMENT_MODE_KEY) == "custom" else None,
+                    attachment_details=record.get("attachment_details"),
+                    raw_updates={
+                        ROW_SEND_STATUS_KEY: record[ROW_SEND_STATUS_KEY],
+                        ROW_ATTACHMENT_STATUS_KEY: record[ROW_ATTACHMENT_STATUS_KEY],
+                        ROW_ERROR_MSG_KEY: record[ROW_ERROR_MSG_KEY],
+                        ROW_SEND_TIME_KEY: record[ROW_SEND_TIME_KEY],
+                        "attachment_details": record.get("attachment_details", []),
+                    },
+                )
+            except Exception as exc:
+                self.append_log(f"写入任务项结果失败：{exc}")
+
+        scheduled_job_id = self.active_scheduled_job.job_id if self.active_scheduled_job is not None else None
+        try:
+            self.local_store.append_send_event(
+                task_id=self.current_runtime_task_id,
+                task_item_id=int(str(task_item_id)) if task_item_id else None,
+                scheduled_job_id=scheduled_job_id,
+                target_value=str(row_result.get("target_value") or ""),
+                target_type=str(row_result.get(ROW_TARGET_TYPE_KEY) or ""),
+                message_mode=str(row_result.get(ROW_MESSAGE_MODE_KEY) or ""),
+                send_status=str(row_result.get("send_status") or ""),
+                send_time=str(row_result.get("send_time") or ""),
+                error_msg=str(row_result.get("error_msg") or ""),
+                attachment_status=str(row_result.get("attachment_status") or ""),
+                source_json_path=self.current_runtime_source_json_path,
+                log_path=self.current_runtime_log_path,
+                event_data=row_result,
+            )
+            for attachment_item in row_result.get("attachments") or []:
+                self.local_store.append_send_event(
+                    task_id=self.current_runtime_task_id,
+                    task_item_id=int(str(task_item_id)) if task_item_id else None,
+                    scheduled_job_id=scheduled_job_id,
+                    target_value=str(row_result.get("target_value") or ""),
+                    target_type=str(row_result.get(ROW_TARGET_TYPE_KEY) or ""),
+                    message_mode=str(row_result.get(ROW_MESSAGE_MODE_KEY) or ""),
+                    send_status=str(row_result.get("send_status") or ""),
+                    send_time=str(row_result.get("send_time") or ""),
+                    error_msg=str(attachment_item.get("error_msg") or ""),
+                    file_path=str(attachment_item.get("file_path") or ""),
+                    file_type=str(attachment_item.get("file_type") or ""),
+                    attachment_status=str(attachment_item.get("attachment_status") or ""),
+                    source_json_path=self.current_runtime_source_json_path,
+                    log_path=self.current_runtime_log_path,
+                    event_data=attachment_item,
+                )
+        except Exception as exc:
+            self.append_log(f"写入发送事件失败：{exc}")
+
+        if self.current_runtime_source_json_path and json_task_helper is not None:
+            source_index = int(record.get("source_json_index") or record.get("source_target_index") or index)
+            try:
+                json_task_helper.update_json_target_status(
+                    self.current_runtime_source_json_path,
+                    source_json_index=source_index,
+                    send_status=str(row_result.get("send_status") or ""),
+                    error_msg=str(row_result.get("error_msg") or ""),
+                    attachment_status=str(row_result.get("attachment_status") or ""),
+                    send_time=str(row_result.get("send_time") or ""),
+                    attachment_results=list(row_result.get("attachments") or []),
+                )
+            except Exception as exc:
+                self.append_log(f"回写 JSON 目标状态失败：{exc}")
+
+    def handle_target_log(self, _message: str, row_result: dict[str, Any]) -> None:
+        if not self.current_runtime_log_path:
+            return
+        if not row_result or (not row_result.get("target_value") and not row_result.get("send_status")):
+            return
+        if json_task_helper is not None:
+            try:
+                json_task_helper.append_task_log(
+                    self.current_runtime_log_path,
+                    {
+                        "timestamp": row_result.get("send_time") or datetime.now().strftime(JSON_TIME_FORMAT),
+                        "target": row_result.get("target_value"),
+                        "text_status": row_result.get("text_status"),
+                        "attachment_status": row_result.get("attachment_status"),
+                        "reason": row_result.get("error_msg"),
+                        "attachments": row_result.get("attachments") or [],
+                    },
+                )
+                return
+            except Exception as exc:
+                self.append_log(f"写入任务日志失败：{exc}")
+
+    def handle_summary_result(self, summary: dict[str, Any]) -> None:
+        if self.current_runtime_log_path and json_task_helper is not None:
+            try:
+                json_task_helper.append_task_log(
+                    self.current_runtime_log_path,
+                    f"SUMMARY | total={summary.get('total')} | sent={summary.get('sent')} | failed={summary.get('failed')} | skipped={summary.get('skipped')}",
+                )
+            except Exception as exc:
+                self.append_log(f"写入汇总日志失败：{exc}")
+
+        payload = None
+        if self.current_runtime_source_json_path and json_task_helper is not None:
+            try:
+                if not summary.get("stopped"):
+                    json_task_helper.update_json_task_end_time(
+                        self.current_runtime_source_json_path,
+                        end_time=str(summary.get("finished_at") or datetime.now().strftime(JSON_TIME_FORMAT)),
+                    )
+                payload = json_task_helper.load_json_task_file(self.current_runtime_source_json_path, validate_exists=False)
+            except Exception as exc:
+                self.append_log(f"回写 JSON 结束时间失败：{exc}")
+
+        if self.current_runtime_task_id is not None and payload is not None:
+            try:
+                self.local_store.sync_json_task_payload(
+                    self.current_runtime_task_id,
+                    payload,
+                    json_end_time=str(payload.get("end_time") or ""),
+                    log_path=self.current_runtime_log_path,
+                    common_attachments=payload.get("common_attachments") or [],
+                )
+            except Exception as exc:
+                self.append_log(f"同步 JSON 任务快照失败：{exc}")
 
     def showEvent(self, event) -> None:
         super().showEvent(event)
@@ -2099,6 +2840,7 @@ class ExcelSenderGUI(QWidget):
             QMessageBox.warning(self, "请先停止发送", "当前仍在发送中，请先停止任务后再关闭窗口。")
             event.ignore()
             return
+        self.scheduler_timer.stop()
         super().closeEvent(event)
 
 

@@ -1,6 +1,9 @@
+import json
 import random
 import time
 from datetime import datetime
+from pathlib import Path
+from typing import Callable
 
 from PyQt5.QtCore import QThread, pyqtSignal
 
@@ -12,13 +15,48 @@ from ui_auto_wechat import WeChat
 CUSTOM_MESSAGE_OVERRIDE_KEY = "__custom_message_override"
 DEFAULT_REPORT_TARGET = "C19881212"
 
+MESSAGE_MODE_TEMPLATE = "template"
+MESSAGE_MODE_CUSTOM = "custom"
+ATTACHMENT_MODE_COMMON = "common"
+ATTACHMENT_MODE_CUSTOM = "custom"
+
+TEXT_STATUS_SUCCESS = "success"
+TEXT_STATUS_FAILED = "failed"
+TEXT_STATUS_SKIPPED = "skipped"
+
+ATTACHMENT_STATUS_SUCCESS = "success"
+ATTACHMENT_STATUS_FAILED = "failed"
+ATTACHMENT_STATUS_SKIPPED = "skipped"
+
+SEND_STATUS_SUCCESS = "success"
+SEND_STATUS_PARTIAL_SUCCESS = "partial_success"
+SEND_STATUS_FAILED = "failed"
+SEND_STATUS_SKIPPED = "skipped"
+
 
 class WeChatSenderService:
     def __init__(self, path: str = "", locale: str = "zh-CN") -> None:
         self.wechat = WeChat(path=path, locale=locale)
 
-    def send_text_message(self, wechat_id: str, message: str) -> None:
-        self.wechat.send_text_message(wechat_id, message)
+    def send_text_message(self, wechat_id: str, message: str, search_user: bool = True) -> None:
+        self.wechat.send_text_message(wechat_id, message, search_user=search_user)
+
+    def send_file(self, wechat_id: str, path: str, search_user: bool = True) -> None:
+        self.wechat.send_file(wechat_id, path, search_user=search_user)
+
+    def send_files(
+        self,
+        wechat_id: str,
+        paths: list[str],
+        search_user: bool = True,
+        inter_file_delay: float = 0.2,
+    ) -> None:
+        self.wechat.send_files(
+            wechat_id,
+            paths=paths,
+            search_user=search_user,
+            inter_file_delay=inter_file_delay,
+        )
 
 
 class PersonalizedSendThread(QThread):
@@ -42,6 +80,10 @@ class PersonalizedSendThread(QThread):
         operator_name: str = "",
         report_to: str = DEFAULT_REPORT_TARGET,
         auto_report: bool = True,
+        common_attachments: list | None = None,
+        target_result_callback: Callable[[dict], None] | None = None,
+        target_log_callback: Callable[[str, dict], None] | None = None,
+        summary_callback: Callable[[dict], None] | None = None,
         parent=None,
     ) -> None:
         super().__init__(parent)
@@ -58,6 +100,10 @@ class PersonalizedSendThread(QThread):
         self.operator_name = operator_name.strip()
         self.report_to = report_to.strip() or DEFAULT_REPORT_TARGET
         self.auto_report = auto_report
+        self.common_attachments = self._normalize_attachment_items(common_attachments or [])
+        self.target_result_callback = target_result_callback
+        self.target_log_callback = target_log_callback
+        self.summary_callback = summary_callback
         self._stop_requested = False
 
     def request_stop(self) -> None:
@@ -82,6 +128,9 @@ class PersonalizedSendThread(QThread):
             "report_sent": False,
             "report_error": "",
             "random_delay_count": 0,
+            "attachments_sent": 0,
+            "attachments_failed": 0,
+            "targets": [],
         }
 
         sender: WeChatSenderService | None = None
@@ -93,47 +142,44 @@ class PersonalizedSendThread(QThread):
                 for index, row in enumerate(self.records, start=1):
                     if self._stop_requested:
                         summary["stopped"] = True
-                        self.log.emit("用户已停止发送。")
+                        self._emit_log("用户已停止发送。")
                         break
 
-                    target_value = (row.get(self.target_column) or "").strip()
-                    if target_value == "":
-                        summary["skipped"] += 1
-                        self.log.emit(f"[{index}/{total}] 跳过：{self.target_column} 为空。")
-                        continue
+                    row_result = self._execute_single_target(
+                        sender=sender,
+                        row=row,
+                        index=index,
+                        total=total,
+                    )
+                    summary["targets"].append(row_result)
+                    summary["attachments_sent"] += int(row_result.get("attachment_sent_count", 0))
+                    summary["attachments_failed"] += int(row_result.get("attachment_failed_count", 0))
 
-                    if CUSTOM_MESSAGE_OVERRIDE_KEY in row:
-                        message = str(row.get(CUSTOM_MESSAGE_OVERRIDE_KEY, ""))
-                    else:
-                        message = render_template(self.template, row)
-                    if message.strip() == "":
-                        summary["skipped"] += 1
-                        self.log.emit(f"[{index}/{total}] 跳过：{target_value} 的消息内容为空。")
-                        continue
-
-                    try:
-                        sender.send_text_message(target_value, message)
+                    send_status = str(row_result.get("send_status") or "")
+                    if send_status == SEND_STATUS_SUCCESS:
                         summary["sent"] += 1
-                        self.progress.emit(index, total, target_value)
-                        self.log.emit(f"[{index}/{total}] 已发送：{target_value}")
-                    except Exception as exc:
+                    elif send_status == SEND_STATUS_SKIPPED:
+                        summary["skipped"] += 1
+                    else:
                         summary["failed"] += 1
-                        self.log.emit(f"[{index}/{total}] 发送失败：{target_value}，错误：{exc}")
+
+                    self.progress.emit(index, total, str(row_result.get("target_value") or ""))
+                    self._safe_target_result_callback(row_result)
 
                     if index < total:
                         self._sleep_with_stop_check(self.interval_seconds)
                         if self._stop_requested:
                             summary["stopped"] = True
-                            self.log.emit("用户已停止发送。")
+                            self._emit_log("用户已停止发送。")
                             break
 
                         extra_delay = delay_plan.get(index)
                         if extra_delay:
-                            self.log.emit(f"[{index}/{total}] 随机延迟事务：等待 {extra_delay} 秒。")
+                            self._emit_log(f"[{index}/{total}] 随机延迟事务：等待 {extra_delay} 秒。")
                             self._sleep_with_stop_check(extra_delay)
                             if self._stop_requested:
                                 summary["stopped"] = True
-                                self.log.emit("用户已停止发送。")
+                                self._emit_log("用户已停止发送。")
                                 break
 
         except Exception as exc:
@@ -146,14 +192,335 @@ class PersonalizedSendThread(QThread):
 
         if self.auto_report and sender is not None and self.report_to:
             try:
-                sender.send_text_message(self.report_to, self._build_report_text(summary))
+                sender.send_text_message(
+                    self.report_to,
+                    self._build_report_text(summary),
+                    search_user=True,
+                )
                 summary["report_sent"] = True
-                self.log.emit(f"任务结束后已自动向 {self.report_to} 发送汇报。")
+                self._emit_log(f"任务结束后已自动向 {self.report_to} 发送汇报。")
             except Exception as exc:
                 summary["report_error"] = str(exc)
-                self.log.emit(f"自动汇报失败：{exc}")
+                self._emit_log(f"自动汇报失败：{exc}")
 
+        self._safe_summary_callback(summary)
         self.completed.emit(summary)
+
+    def _execute_single_target(
+        self,
+        *,
+        sender: WeChatSenderService,
+        row: dict[str, str],
+        index: int,
+        total: int,
+    ) -> dict:
+        started_at = datetime.now()
+        target_value = (row.get(self.target_column) or "").strip()
+        target_type = str(row.get("target_type") or row.get("__target_type") or "").strip()
+
+        message, message_mode = self._resolve_message_and_mode(row)
+        attachments, attachment_mode = self._resolve_attachments(row)
+
+        row_result = {
+            "index": index,
+            "total": total,
+            "target_value": target_value,
+            "target_type": target_type,
+            "message_mode": message_mode,
+            "message": message,
+            "attachment_mode": attachment_mode,
+            "attachments": [],
+            "attachment_status": ATTACHMENT_STATUS_SKIPPED,
+            "attachment_sent_count": 0,
+            "attachment_failed_count": 0,
+            "text_status": TEXT_STATUS_SKIPPED,
+            "send_status": SEND_STATUS_SKIPPED,
+            "error_msg": "",
+            "started_at": started_at.strftime("%Y-%m-%d %H:%M:%S"),
+            "send_time": "",
+            "elapsed_seconds": 0.0,
+        }
+
+        if target_value == "":
+            row_result["error_msg"] = f"{self.target_column} 为空"
+            self._emit_log(f"[{index}/{total}] 跳过：{self.target_column} 为空。", row_result)
+            return self._finalize_row_result(row_result, started_at)
+
+        has_message = bool(message.strip())
+        has_attachments = bool(attachments)
+
+        if not has_message and not has_attachments:
+            row_result["error_msg"] = "消息与附件均为空"
+            self._emit_log(f"[{index}/{total}] 跳过：{target_value} 的消息与附件均为空。", row_result)
+            return self._finalize_row_result(row_result, started_at)
+
+        text_error = ""
+        if has_message:
+            try:
+                sender.send_text_message(target_value, message, search_user=True)
+                row_result["text_status"] = TEXT_STATUS_SUCCESS
+            except Exception as exc:
+                text_error = str(exc)
+                row_result["text_status"] = TEXT_STATUS_FAILED
+                row_result["error_msg"] = text_error
+                self._emit_log(f"[{index}/{total}] 文本发送失败：{target_value}，错误：{exc}", row_result)
+        else:
+            row_result["text_status"] = TEXT_STATUS_SKIPPED
+
+        attachment_results: list[dict] = []
+        attachment_sent_count = 0
+        attachment_failed_count = 0
+        attachment_error = ""
+
+        if attachments and row_result["text_status"] != TEXT_STATUS_FAILED:
+            for attachment_index, attachment in enumerate(attachments, start=1):
+                file_path = str(attachment.get("file_path") or "")
+                file_type = str(attachment.get("file_type") or "")
+                attachment_item = {
+                    "file_path": file_path,
+                    "file_type": file_type,
+                    "attachment_status": ATTACHMENT_STATUS_SKIPPED,
+                    "error_msg": "",
+                }
+                try:
+                    sender.send_file(
+                        target_value,
+                        file_path,
+                        search_user=(not has_message and attachment_index == 1),
+                    )
+                    attachment_item["attachment_status"] = ATTACHMENT_STATUS_SUCCESS
+                    attachment_sent_count += 1
+                except Exception as exc:
+                    attachment_item["attachment_status"] = ATTACHMENT_STATUS_FAILED
+                    attachment_item["error_msg"] = str(exc)
+                    attachment_failed_count += 1
+                    if attachment_error == "":
+                        attachment_error = str(exc)
+                attachment_results.append(attachment_item)
+
+        elif attachments and row_result["text_status"] == TEXT_STATUS_FAILED:
+            for attachment in attachments:
+                attachment_results.append(
+                    {
+                        "file_path": str(attachment.get("file_path") or ""),
+                        "file_type": str(attachment.get("file_type") or ""),
+                        "attachment_status": ATTACHMENT_STATUS_SKIPPED,
+                        "error_msg": "文本发送失败，未执行附件发送。",
+                    }
+                )
+
+        row_result["attachments"] = attachment_results
+        row_result["attachment_sent_count"] = attachment_sent_count
+        row_result["attachment_failed_count"] = attachment_failed_count
+        row_result["attachment_status"] = self._resolve_attachment_status(
+            has_attachments=has_attachments,
+            sent_count=attachment_sent_count,
+            failed_count=attachment_failed_count,
+        )
+
+        row_result["send_status"] = self._resolve_send_status(
+            text_status=str(row_result["text_status"]),
+            attachment_status=str(row_result["attachment_status"]),
+            has_message=has_message,
+            has_attachments=has_attachments,
+        )
+        row_result["error_msg"] = row_result["error_msg"] or attachment_error or text_error
+
+        status_text = self._build_target_status_text(row_result)
+        self._emit_log(f"[{index}/{total}] {status_text}：{target_value}", row_result)
+
+        return self._finalize_row_result(row_result, started_at)
+
+    def _resolve_message_and_mode(self, row: dict[str, str]) -> tuple[str, str]:
+        explicit_mode = str(row.get("message_mode") or "").strip().lower()
+
+        if CUSTOM_MESSAGE_OVERRIDE_KEY in row:
+            return str(row.get(CUSTOM_MESSAGE_OVERRIDE_KEY, "")), MESSAGE_MODE_CUSTOM
+
+        if explicit_mode == MESSAGE_MODE_CUSTOM:
+            return str(row.get("message") or ""), MESSAGE_MODE_CUSTOM
+
+        if explicit_mode == MESSAGE_MODE_TEMPLATE:
+            return render_template(self.template, row), MESSAGE_MODE_TEMPLATE
+
+        if self.template.strip():
+            return render_template(self.template, row), MESSAGE_MODE_TEMPLATE
+
+        fallback_message = str(row.get("message") or "")
+        if fallback_message.strip():
+            return fallback_message, MESSAGE_MODE_CUSTOM
+        return "", MESSAGE_MODE_TEMPLATE
+
+    def _resolve_attachments(self, row: dict[str, str]) -> tuple[list[dict], str]:
+        explicit_mode = str(row.get("attachment_mode") or "").strip().lower()
+        custom_attachments = self._normalize_attachment_items(self._extract_custom_attachment_source(row))
+
+        if explicit_mode == ATTACHMENT_MODE_CUSTOM:
+            return custom_attachments, ATTACHMENT_MODE_CUSTOM
+
+        if explicit_mode == ATTACHMENT_MODE_COMMON:
+            return [dict(item) for item in self.common_attachments], ATTACHMENT_MODE_COMMON
+
+        if custom_attachments:
+            return custom_attachments, ATTACHMENT_MODE_CUSTOM
+
+        return [dict(item) for item in self.common_attachments], ATTACHMENT_MODE_COMMON
+
+    def _extract_custom_attachment_source(self, row: dict[str, str]):
+        if "attachments" in row:
+            return row.get("attachments")
+        if "custom_attachments" in row:
+            return row.get("custom_attachments")
+        if "__attachments" in row:
+            return row.get("__attachments")
+        return []
+
+    def _normalize_attachment_items(self, raw_items) -> list[dict]:
+        normalized: list[dict] = []
+        items = self._load_attachment_items(raw_items)
+        for item in items:
+            normalized_item = self._normalize_attachment_item(item)
+            if normalized_item is not None:
+                normalized.append(normalized_item)
+        return normalized
+
+    def _load_attachment_items(self, raw_items):
+        if raw_items is None:
+            return []
+        if isinstance(raw_items, (list, tuple)):
+            return list(raw_items)
+        if isinstance(raw_items, dict):
+            return [raw_items]
+        if isinstance(raw_items, str):
+            raw_text = raw_items.strip()
+            if raw_text == "":
+                return []
+            if raw_text.startswith("[") or raw_text.startswith("{"):
+                try:
+                    loaded = json.loads(raw_text)
+                    if isinstance(loaded, list):
+                        return loaded
+                    if isinstance(loaded, dict):
+                        return [loaded]
+                except json.JSONDecodeError:
+                    pass
+            if ";" in raw_text:
+                return [segment.strip() for segment in raw_text.split(";") if segment.strip()]
+            return [raw_text]
+        return []
+
+    def _normalize_attachment_item(self, item) -> dict | None:
+        if isinstance(item, str):
+            file_path = item.strip()
+            if file_path == "":
+                return None
+            return {
+                "file_path": file_path,
+                "file_type": self._infer_file_type(file_path),
+            }
+
+        if isinstance(item, dict):
+            file_path = str(item.get("file_path") or item.get("path") or "").strip()
+            if file_path == "":
+                return None
+            file_type = str(item.get("file_type") or "").strip().lower() or self._infer_file_type(file_path)
+            return {
+                "file_path": file_path,
+                "file_type": file_type,
+            }
+
+        return None
+
+    def _infer_file_type(self, file_path: str) -> str:
+        suffix = Path(file_path).suffix.lower()
+        if suffix == ".pdf":
+            return "pdf"
+        if suffix in {".jpg", ".jpeg", ".png", ".bmp", ".webp"}:
+            return "image"
+        return suffix.lstrip(".")
+
+    def _resolve_attachment_status(
+        self,
+        *,
+        has_attachments: bool,
+        sent_count: int,
+        failed_count: int,
+    ) -> str:
+        if not has_attachments:
+            return ATTACHMENT_STATUS_SKIPPED
+        if failed_count > 0:
+            return ATTACHMENT_STATUS_FAILED
+        if sent_count > 0:
+            return ATTACHMENT_STATUS_SUCCESS
+        return ATTACHMENT_STATUS_SKIPPED
+
+    def _resolve_send_status(
+        self,
+        *,
+        text_status: str,
+        attachment_status: str,
+        has_message: bool,
+        has_attachments: bool,
+    ) -> str:
+        if text_status == TEXT_STATUS_FAILED:
+            return SEND_STATUS_FAILED
+        if attachment_status == ATTACHMENT_STATUS_FAILED:
+            if text_status == TEXT_STATUS_SUCCESS:
+                return SEND_STATUS_PARTIAL_SUCCESS
+            return SEND_STATUS_FAILED
+        if text_status == TEXT_STATUS_SUCCESS or attachment_status == ATTACHMENT_STATUS_SUCCESS:
+            return SEND_STATUS_SUCCESS
+        if not has_message and not has_attachments:
+            return SEND_STATUS_SKIPPED
+        return SEND_STATUS_SKIPPED
+
+    def _build_target_status_text(self, row_result: dict) -> str:
+        send_status = str(row_result.get("send_status") or "")
+        text_status = str(row_result.get("text_status") or "")
+        attachment_status = str(row_result.get("attachment_status") or "")
+        if send_status == SEND_STATUS_SUCCESS:
+            if attachment_status == ATTACHMENT_STATUS_SUCCESS and text_status == TEXT_STATUS_SUCCESS:
+                return "文本+附件发送成功"
+            if attachment_status == ATTACHMENT_STATUS_SUCCESS:
+                return "附件发送成功"
+            return "文本发送成功"
+        if send_status == SEND_STATUS_PARTIAL_SUCCESS:
+            return "文本成功，附件失败"
+        if send_status == SEND_STATUS_SKIPPED:
+            return "已跳过"
+        return "发送失败"
+
+    def _finalize_row_result(self, row_result: dict, started_at: datetime) -> dict:
+        finished_at = datetime.now()
+        row_result["send_time"] = finished_at.strftime("%Y-%m-%d %H:%M:%S")
+        row_result["elapsed_seconds"] = round((finished_at - started_at).total_seconds(), 3)
+        return row_result
+
+    def _emit_log(self, message: str, row_result: dict | None = None) -> None:
+        self.log.emit(message)
+        if self.target_log_callback is None:
+            return
+        try:
+            payload = dict(row_result or {})
+            self.target_log_callback(message, payload)
+        except Exception as callback_exc:
+            self.log.emit(f"日志回调执行失败：{callback_exc}")
+
+    def _safe_target_result_callback(self, row_result: dict) -> None:
+        if self.target_result_callback is None:
+            return
+        try:
+            self.target_result_callback(dict(row_result))
+        except Exception as callback_exc:
+            self.log.emit(f"结果回调执行失败：{callback_exc}")
+
+    def _safe_summary_callback(self, summary: dict) -> None:
+        if self.summary_callback is None:
+            return
+        try:
+            self.summary_callback(dict(summary))
+        except Exception as callback_exc:
+            self.log.emit(f"汇总回调执行失败：{callback_exc}")
 
     def _sleep_with_stop_check(self, seconds: int) -> None:
         if seconds <= 0:
@@ -190,7 +557,7 @@ class PersonalizedSendThread(QThread):
             if CUSTOM_MESSAGE_OVERRIDE_KEY in row:
                 preview = str(row.get(CUSTOM_MESSAGE_OVERRIDE_KEY, "")).strip()
             else:
-                preview = render_template(self.template, row).strip()
+                preview = render_template(self.template, row).strip() if self.template else str(row.get("message") or "").strip()
             if preview:
                 return preview[:50]
         return self.template.strip()[:50]
@@ -198,8 +565,8 @@ class PersonalizedSendThread(QThread):
     def _build_report_text(self, summary: dict) -> str:
         preview = summary.get("message_preview", "")
         if preview:
-            preview = preview[:30]
-            if len(summary.get("message_preview", "")) > 30:
+            preview = str(preview)[:30]
+            if len(str(summary.get("message_preview", ""))) > 30:
                 preview += "..."
         else:
             preview = "无"
@@ -211,6 +578,7 @@ class PersonalizedSendThread(QThread):
                 f"操作人：{operator_name}",
                 f"发送总人数：{summary['total']}",
                 f"成功：{summary['sent']} / 失败：{summary['failed']} / 跳过：{summary['skipped']}",
+                f"附件成功：{summary.get('attachments_sent', 0)} / 附件失败：{summary.get('attachments_failed', 0)}",
                 f"内容摘要：{preview}",
                 f"执行时间：{summary['started_at']} ~ {summary['finished_at']}（历时{summary['elapsed']}）",
             ]

@@ -36,6 +36,10 @@ filtered_wechat_ids*.txt
 @AutomationLog.txt
 nul
 docs/easychat_local.sqlite3
+docs/ralph_store_smoke.sqlite3
+logs/
+*.easychat.log
+*.easychat.bak
 
 # AI artifacts
 .agent/
@@ -44,3 +48,5 @@ docs/.omx/
 
 # Local captures
 Snipaste_*.png
+
+.omx/

@@ -239,14 +239,37 @@ class WeChat:
             path: 发送文件的本地地址
             search_user: 是否需要搜索用户
         """
+        self.send_files(name=name, paths=[path], search_user=search_user)
+
+    def send_files(
+        self,
+        name: str,
+        paths: List[str],
+        search_user: bool = True,
+        inter_file_delay: float = 0.2,
+    ) -> None:
+        """
+        发送多个文件。首个文件会按 `search_user` 决定是否搜索联系人；
+        后续文件默认复用当前聊天窗口，不再重复搜索。
+        Args:
+            name: 联系人或群聊名称
+            paths: 文件路径列表
+            search_user: 是否在发送首个文件前搜索聊天对象
+            inter_file_delay: 文件之间的发送间隔（秒）
+        """
+        valid_paths = [str(path).strip() for path in paths if str(path).strip()]
+        if not valid_paths:
+            return
+
         if search_user:
             self.get_contact(name)
-        
-        # 将文件复制到剪切板
-        setClipboardFiles([path])
-        
-        auto.SendKeys("{Ctrl}v")
-        self.press_enter()
+
+        for index, path in enumerate(valid_paths, start=1):
+            setClipboardFiles([path])
+            auto.SendKeys("{Ctrl}v")
+            self.press_enter()
+            if index < len(valid_paths):
+                time.sleep(max(0.0, float(inter_file_delay)))
     
     # 获取所有通讯录中所有联系人
     def find_all_contacts(self) -> pd.DataFrame:

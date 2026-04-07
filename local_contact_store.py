@@ -5,6 +5,14 @@ import sqlite3
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
+from typing import Any
+
+from json_task_io import (
+    build_log_path,
+    filter_pending_targets,
+    load_json_task_file,
+    validate_json_task_payload,
+)
 
 
 DEFAULT_LOCAL_DB_PATH = Path("docs") / "easychat_local.sqlite3"
@@ -26,6 +34,7 @@ DATASET_GROUP = "group"
 DATASET_ALL = "all"
 SOURCE_MODE_FILE = "file"
 SOURCE_MODE_LOCAL_DB = "local_db"
+SOURCE_MODE_JSON = "json"
 
 DATASET_LABELS = {
     DATASET_FRIEND: "好友",
@@ -47,6 +56,10 @@ SCHEDULE_STATUS_RUNNING = "running"
 SCHEDULE_STATUS_COMPLETED = "completed"
 SCHEDULE_STATUS_CANCELLED = "cancelled"
 SCHEDULE_STATUS_FAILED = "failed"
+
+TASK_KIND_STANDARD = "standard"
+TASK_KIND_JSON = "json"
+CONFLICT_STATUS_WAITING = "waiting"
 
 
 @dataclass(slots=True)
@@ -84,10 +97,40 @@ class ScheduledSendJob:
     completed_at: str
     last_error: str
     result_json: str
+    task_kind: str = ""
+    source_json_path: str = ""
+    source_json_name: str = ""
+    wait_reason: str = ""
+    conflict_status: str = ""
+    conflict_notified: int = 0
+    wait_notified_at: str = ""
+    log_path: str = ""
+    json_writeback_enabled: int = 0
 
     @property
     def dataset_label(self) -> str:
         return DATASET_LABELS.get(self.dataset_type, self.dataset_type or "未指定")
+
+
+@dataclass(slots=True)
+class SendTaskEvent:
+    event_id: int
+    task_id: int
+    task_item_id: int | None
+    scheduled_job_id: int | None
+    created_at: str
+    target_value: str
+    target_type: str
+    message_mode: str
+    send_status: str
+    send_time: str
+    error_msg: str
+    file_path: str
+    file_type: str
+    attachment_status: str
+    source_json_path: str
+    log_path: str
+    event_json: str
 
 
 class LocalContactStore:
@@ -202,16 +245,70 @@ class LocalContactStore:
                     FOREIGN KEY(task_id) REFERENCES send_tasks(id)
                 );
 
+                CREATE TABLE IF NOT EXISTS send_task_events (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    task_id INTEGER NOT NULL,
+                    task_item_id INTEGER,
+                    scheduled_job_id INTEGER,
+                    created_at TEXT NOT NULL,
+                    target_value TEXT NOT NULL DEFAULT '',
+                    target_type TEXT NOT NULL DEFAULT '',
+                    message_mode TEXT NOT NULL DEFAULT '',
+                    send_status TEXT NOT NULL DEFAULT '',
+                    send_time TEXT NOT NULL DEFAULT '',
+                    error_msg TEXT NOT NULL DEFAULT '',
+                    file_path TEXT NOT NULL DEFAULT '',
+                    file_type TEXT NOT NULL DEFAULT '',
+                    attachment_status TEXT NOT NULL DEFAULT '',
+                    source_json_path TEXT NOT NULL DEFAULT '',
+                    log_path TEXT NOT NULL DEFAULT '',
+                    event_json TEXT NOT NULL DEFAULT '',
+                    FOREIGN KEY(task_id) REFERENCES send_tasks(id)
+                );
+
                 CREATE INDEX IF NOT EXISTS idx_friend_import_batches_is_current ON friend_import_batches(is_current);
                 CREATE INDEX IF NOT EXISTS idx_group_import_batches_is_current ON group_import_batches(is_current);
                 CREATE INDEX IF NOT EXISTS idx_friend_contacts_batch_id ON friend_contacts(batch_id);
                 CREATE INDEX IF NOT EXISTS idx_group_contacts_batch_id ON group_contacts(batch_id);
                 CREATE INDEX IF NOT EXISTS idx_send_task_items_task_id ON send_task_items(task_id);
                 CREATE INDEX IF NOT EXISTS idx_scheduled_send_jobs_status_time ON scheduled_send_jobs(status, scheduled_at);
+                CREATE INDEX IF NOT EXISTS idx_send_task_events_task_id ON send_task_events(task_id);
+                CREATE INDEX IF NOT EXISTS idx_send_task_events_task_item_id ON send_task_events(task_item_id);
+                CREATE INDEX IF NOT EXISTS idx_send_task_events_job_id ON send_task_events(scheduled_job_id);
                 """
             )
             self._ensure_column(connection, "send_tasks", "source_mode", "TEXT NOT NULL DEFAULT ''")
             self._ensure_column(connection, "send_tasks", "dataset_type", "TEXT NOT NULL DEFAULT ''")
+            self._ensure_column(connection, "send_tasks", "task_kind", "TEXT NOT NULL DEFAULT ''")
+            self._ensure_column(connection, "send_tasks", "source_json_path", "TEXT NOT NULL DEFAULT ''")
+            self._ensure_column(connection, "send_tasks", "source_json_name", "TEXT NOT NULL DEFAULT ''")
+            self._ensure_column(connection, "send_tasks", "json_start_time", "TEXT NOT NULL DEFAULT ''")
+            self._ensure_column(connection, "send_tasks", "json_end_time", "TEXT NOT NULL DEFAULT ''")
+            self._ensure_column(connection, "send_tasks", "json_log_path", "TEXT NOT NULL DEFAULT ''")
+            self._ensure_column(connection, "send_tasks", "common_attachments_json", "TEXT NOT NULL DEFAULT '[]'")
+            self._ensure_column(connection, "send_tasks", "json_payload", "TEXT NOT NULL DEFAULT ''")
+            self._ensure_column(connection, "send_tasks", "last_sync_at", "TEXT NOT NULL DEFAULT ''")
+
+            self._ensure_column(connection, "send_task_items", "target_type", "TEXT NOT NULL DEFAULT ''")
+            self._ensure_column(connection, "send_task_items", "message_mode", "TEXT NOT NULL DEFAULT ''")
+            self._ensure_column(connection, "send_task_items", "attachment_mode", "TEXT NOT NULL DEFAULT ''")
+            self._ensure_column(connection, "send_task_items", "attachments_json", "TEXT NOT NULL DEFAULT '[]'")
+            self._ensure_column(connection, "send_task_items", "send_status", "TEXT NOT NULL DEFAULT ''")
+            self._ensure_column(connection, "send_task_items", "send_time", "TEXT NOT NULL DEFAULT ''")
+            self._ensure_column(connection, "send_task_items", "error_msg", "TEXT NOT NULL DEFAULT ''")
+            self._ensure_column(connection, "send_task_items", "attachment_status", "TEXT NOT NULL DEFAULT ''")
+            self._ensure_column(connection, "send_task_items", "source_json_index", "INTEGER NOT NULL DEFAULT 0")
+            self._ensure_column(connection, "send_task_items", "attachment_details_json", "TEXT NOT NULL DEFAULT '[]'")
+
+            self._ensure_column(connection, "scheduled_send_jobs", "task_kind", "TEXT NOT NULL DEFAULT ''")
+            self._ensure_column(connection, "scheduled_send_jobs", "source_json_path", "TEXT NOT NULL DEFAULT ''")
+            self._ensure_column(connection, "scheduled_send_jobs", "source_json_name", "TEXT NOT NULL DEFAULT ''")
+            self._ensure_column(connection, "scheduled_send_jobs", "wait_reason", "TEXT NOT NULL DEFAULT ''")
+            self._ensure_column(connection, "scheduled_send_jobs", "conflict_status", "TEXT NOT NULL DEFAULT ''")
+            self._ensure_column(connection, "scheduled_send_jobs", "conflict_notified", "INTEGER NOT NULL DEFAULT 0")
+            self._ensure_column(connection, "scheduled_send_jobs", "wait_notified_at", "TEXT NOT NULL DEFAULT ''")
+            self._ensure_column(connection, "scheduled_send_jobs", "log_path", "TEXT NOT NULL DEFAULT ''")
+            self._ensure_column(connection, "scheduled_send_jobs", "json_writeback_enabled", "INTEGER NOT NULL DEFAULT 0")
 
         self._migrate_legacy_current_batch()
 
@@ -319,7 +416,7 @@ class LocalContactStore:
 
     def create_task_snapshot(
         self,
-        rows: list[dict[str, str]],
+        rows: list[dict[str, Any]],
         filter_fields: str,
         filter_pattern: str,
         target_column: str,
@@ -327,8 +424,23 @@ class LocalContactStore:
         source_batch_id: int | None,
         source_mode: str = "",
         dataset_type: str = "",
+        task_kind: str = TASK_KIND_STANDARD,
+        source_json_path: str = "",
+        source_json_name: str = "",
+        json_start_time: str = "",
+        json_end_time: str = "",
+        common_attachments: list[dict[str, str]] | None = None,
+        json_payload: dict[str, Any] | None = None,
+        json_log_path: str = "",
     ) -> int:
         created_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        normalized_kind = (task_kind or TASK_KIND_STANDARD).strip() or TASK_KIND_STANDARD
+        normalized_source_json_path = str(source_json_path or "").strip()
+        normalized_source_json_name = str(source_json_name or "").strip()
+        if normalized_source_json_path and not normalized_source_json_name:
+            normalized_source_json_name = Path(normalized_source_json_path).name
+        common_attachments_json = self._normalize_json_list_text(common_attachments)
+        payload_json = self._normalize_json_dict_text(json_payload)
         with self.connect() as connection:
             cursor = connection.execute(
                 """
@@ -341,9 +453,18 @@ class LocalContactStore:
                     template_text,
                     total_count,
                     source_mode,
-                    dataset_type
+                    dataset_type,
+                    task_kind,
+                    source_json_path,
+                    source_json_name,
+                    json_start_time,
+                    json_end_time,
+                    common_attachments_json,
+                    json_payload,
+                    json_log_path,
+                    last_sync_at
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     source_batch_id,
@@ -355,6 +476,15 @@ class LocalContactStore:
                     len(rows),
                     source_mode,
                     dataset_type,
+                    normalized_kind,
+                    normalized_source_json_path,
+                    normalized_source_json_name,
+                    str(json_start_time or "").strip(),
+                    str(json_end_time or "").strip(),
+                    common_attachments_json,
+                    payload_json,
+                    str(json_log_path or "").strip(),
+                    "",
                 ),
             )
             task_id = int(cursor.lastrowid)
@@ -367,9 +497,19 @@ class LocalContactStore:
                     target_value,
                     display_name_override,
                     message_override,
-                    raw_json
+                    raw_json,
+                    target_type,
+                    message_mode,
+                    attachment_mode,
+                    attachments_json,
+                    send_status,
+                    send_time,
+                    error_msg,
+                    attachment_status,
+                    source_json_index,
+                    attachment_details_json
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 [
                     (
@@ -380,6 +520,16 @@ class LocalContactStore:
                         str(row.get("__display_name_override") or ""),
                         str(row.get("__custom_message_override") or ""),
                         json.dumps(self._clean_record_for_storage(row), ensure_ascii=False),
+                        str(row.get("target_type") or row.get("__target_type") or "").strip(),
+                        str(row.get("message_mode") or row.get("__message_mode") or "").strip(),
+                        str(row.get("attachment_mode") or row.get("__attachment_mode") or "").strip(),
+                        self._normalize_json_list_text(row.get("attachments")),
+                        str(row.get("send_status") or "").strip(),
+                        str(row.get("send_time") or "").strip(),
+                        str(row.get("error_msg") or "").strip(),
+                        str(row.get("attachment_status") or "").strip(),
+                        self._to_int(row.get("__source_json_index") or row.get("source_json_index"), default=0),
+                        self._normalize_json_list_text(row.get("attachment_details")),
                     )
                     for index, row in enumerate(rows, start=1)
                 ],
@@ -391,7 +541,9 @@ class LocalContactStore:
             row = connection.execute(
                 """
                 SELECT id, source_batch_id, created_at, filter_fields, filter_pattern,
-                       target_column, template_text, total_count, source_mode, dataset_type
+                       target_column, template_text, total_count, source_mode, dataset_type,
+                       task_kind, source_json_path, source_json_name, json_start_time, json_end_time,
+                       json_log_path, common_attachments_json, json_payload, last_sync_at
                 FROM send_tasks
                 WHERE id = ?
                 """,
@@ -412,13 +564,25 @@ class LocalContactStore:
             "total_count": str(row["total_count"] or 0),
             "source_mode": str(row["source_mode"] or ""),
             "dataset_type": str(row["dataset_type"] or ""),
+            "task_kind": str(row["task_kind"] or ""),
+            "source_json_path": str(row["source_json_path"] or ""),
+            "source_json_name": str(row["source_json_name"] or ""),
+            "json_start_time": str(row["json_start_time"] or ""),
+            "json_end_time": str(row["json_end_time"] or ""),
+            "json_log_path": str(row["json_log_path"] or ""),
+            "common_attachments_json": str(row["common_attachments_json"] or "[]"),
+            "json_payload": str(row["json_payload"] or ""),
+            "last_sync_at": str(row["last_sync_at"] or ""),
         }
 
-    def load_task_records(self, task_id: int) -> list[dict[str, str]]:
+    def load_task_records(self, task_id: int) -> list[dict[str, Any]]:
         with self.connect() as connection:
             rows = connection.execute(
                 """
-                SELECT id, source_contact_id, order_index, target_value, display_name_override, message_override, raw_json
+                SELECT id, source_contact_id, order_index, target_value, display_name_override, message_override, raw_json,
+                       target_type, message_mode, attachment_mode, attachments_json,
+                       send_status, send_time, error_msg, attachment_status,
+                       source_json_index, attachment_details_json
                 FROM send_task_items
                 WHERE task_id = ?
                 ORDER BY order_index ASC, id ASC
@@ -426,7 +590,7 @@ class LocalContactStore:
                 (task_id,),
             ).fetchall()
 
-        records: list[dict[str, str]] = []
+        records: list[dict[str, Any]] = []
         for row in rows:
             record = json.loads(row["raw_json"])
             record["__task_item_id"] = str(row["id"])
@@ -437,10 +601,26 @@ class LocalContactStore:
                 record["__display_name_override"] = str(row["display_name_override"])
             if row["message_override"]:
                 record["__custom_message_override"] = str(row["message_override"])
+            record["target_type"] = str(row["target_type"] or record.get("target_type") or "")
+            record["message_mode"] = str(row["message_mode"] or record.get("message_mode") or "")
+            record["attachment_mode"] = str(row["attachment_mode"] or record.get("attachment_mode") or "")
+            record["attachments"] = self._loads_json_value(
+                row["attachments_json"],
+                default=self._loads_json_value(record.get("attachments"), default=[]),
+            )
+            record["send_status"] = str(row["send_status"] or record.get("send_status") or "")
+            record["send_time"] = str(row["send_time"] or record.get("send_time") or "")
+            record["error_msg"] = str(row["error_msg"] or record.get("error_msg") or "")
+            record["attachment_status"] = str(row["attachment_status"] or record.get("attachment_status") or "")
+            record["source_json_index"] = int(row["source_json_index"] or record.get("source_json_index") or 0)
+            record["attachment_details"] = self._loads_json_value(
+                row["attachment_details_json"],
+                default=self._loads_json_value(record.get("attachment_details"), default=[]),
+            )
             records.append(record)
         return records
 
-    def update_task_item(self, task_item_id: int, row: dict[str, str]) -> None:
+    def update_task_item(self, task_item_id: int, row: dict[str, Any]) -> None:
         with self.connect() as connection:
             connection.execute(
                 """
@@ -448,7 +628,17 @@ class LocalContactStore:
                 SET target_value = ?,
                     display_name_override = ?,
                     message_override = ?,
-                    raw_json = ?
+                    raw_json = ?,
+                    target_type = ?,
+                    message_mode = ?,
+                    attachment_mode = ?,
+                    attachments_json = ?,
+                    send_status = ?,
+                    send_time = ?,
+                    error_msg = ?,
+                    attachment_status = ?,
+                    source_json_index = ?,
+                    attachment_details_json = ?
                 WHERE id = ?
                 """,
                 (
@@ -456,6 +646,16 @@ class LocalContactStore:
                     str(row.get("__display_name_override") or ""),
                     str(row.get("__custom_message_override") or ""),
                     json.dumps(self._clean_record_for_storage(row), ensure_ascii=False),
+                    str(row.get("target_type") or row.get("__target_type") or "").strip(),
+                    str(row.get("message_mode") or row.get("__message_mode") or "").strip(),
+                    str(row.get("attachment_mode") or row.get("__attachment_mode") or "").strip(),
+                    self._normalize_json_list_text(row.get("attachments")),
+                    str(row.get("send_status") or "").strip(),
+                    str(row.get("send_time") or "").strip(),
+                    str(row.get("error_msg") or "").strip(),
+                    str(row.get("attachment_status") or "").strip(),
+                    self._to_int(row.get("__source_json_index") or row.get("source_json_index"), default=0),
+                    self._normalize_json_list_text(row.get("attachment_details")),
                     task_item_id,
                 ),
             )
@@ -478,6 +678,15 @@ class LocalContactStore:
         dataset_type: str,
         template_preview: str,
         total_count: int,
+        task_kind: str = TASK_KIND_STANDARD,
+        source_json_path: str = "",
+        source_json_name: str = "",
+        wait_reason: str = "",
+        conflict_status: str = "",
+        conflict_notified: int = 0,
+        wait_notified_at: str = "",
+        log_path: str = "",
+        json_writeback_enabled: bool = False,
     ) -> int:
         created_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         with self.connect() as connection:
@@ -496,9 +705,18 @@ class LocalContactStore:
                     source_mode,
                     dataset_type,
                     template_preview,
-                    total_count
+                    total_count,
+                    task_kind,
+                    source_json_path,
+                    source_json_name,
+                    wait_reason,
+                    conflict_status,
+                    conflict_notified,
+                    wait_notified_at,
+                    log_path,
+                    json_writeback_enabled
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     task_id,
@@ -514,6 +732,15 @@ class LocalContactStore:
                     dataset_type.strip(),
                     template_preview.strip(),
                     total_count,
+                    (task_kind or TASK_KIND_STANDARD).strip() or TASK_KIND_STANDARD,
+                    str(source_json_path or "").strip(),
+                    str(source_json_name or "").strip(),
+                    str(wait_reason or "").strip(),
+                    str(conflict_status or "").strip(),
+                    self._to_int(conflict_notified, default=0),
+                    str(wait_notified_at or "").strip(),
+                    str(log_path or "").strip(),
+                    1 if json_writeback_enabled else 0,
                 ),
             )
         return int(cursor.lastrowid)
@@ -525,7 +752,10 @@ class LocalContactStore:
                 SELECT id, task_id, created_at, scheduled_at, status, interval_seconds,
                        random_delay_min, random_delay_max, operator_name, report_to,
                        source_mode, dataset_type, template_preview, total_count,
-                       started_at, completed_at, last_error, result_json
+                       started_at, completed_at, last_error, result_json,
+                       task_kind, source_json_path, source_json_name, wait_reason,
+                       conflict_status, conflict_notified, wait_notified_at, log_path,
+                       json_writeback_enabled
                 FROM scheduled_send_jobs
                 ORDER BY
                     CASE status
@@ -549,7 +779,10 @@ class LocalContactStore:
                 SELECT id, task_id, created_at, scheduled_at, status, interval_seconds,
                        random_delay_min, random_delay_max, operator_name, report_to,
                        source_mode, dataset_type, template_preview, total_count,
-                       started_at, completed_at, last_error, result_json
+                       started_at, completed_at, last_error, result_json,
+                       task_kind, source_json_path, source_json_name, wait_reason,
+                       conflict_status, conflict_notified, wait_notified_at, log_path,
+                       json_writeback_enabled
                 FROM scheduled_send_jobs
                 WHERE status = ? AND scheduled_at <= ?
                 ORDER BY scheduled_at ASC, id ASC
@@ -565,7 +798,8 @@ class LocalContactStore:
             connection.execute(
                 """
                 UPDATE scheduled_send_jobs
-                SET status = ?, started_at = ?, last_error = ''
+                SET status = ?, started_at = ?, last_error = '',
+                    conflict_status = '', wait_reason = ''
                 WHERE id = ?
                 """,
                 (
@@ -590,7 +824,9 @@ class LocalContactStore:
                 SET status = ?,
                     completed_at = ?,
                     last_error = ?,
-                    result_json = ?
+                    result_json = ?,
+                    conflict_status = '',
+                    wait_reason = ''
                 WHERE id = ?
                 """,
                 (
@@ -607,7 +843,8 @@ class LocalContactStore:
             cursor = connection.execute(
                 """
                 UPDATE scheduled_send_jobs
-                SET status = ?, completed_at = ?, last_error = ''
+                SET status = ?, completed_at = ?, last_error = '',
+                    conflict_status = '', wait_reason = ''
                 WHERE id = ? AND status = ?
                 """,
                 (
@@ -618,6 +855,378 @@ class LocalContactStore:
                 ),
             )
         return cursor.rowcount > 0
+
+    def create_json_task_from_payload(
+        self,
+        *,
+        source_json_path: str | Path,
+        payload: dict[str, Any],
+        interval_seconds: int,
+        random_delay_min: int,
+        random_delay_max: int,
+        operator_name: str,
+        report_to: str,
+        source_mode: str = SOURCE_MODE_JSON,
+        dataset_type: str = "",
+        template_preview: str = "",
+        log_path: str = "",
+        json_writeback_enabled: bool = True,
+    ) -> tuple[int, int]:
+        source_path = Path(source_json_path)
+        if payload:
+            normalized_payload = validate_json_task_payload(
+                payload,
+                source_path=source_path,
+                validate_exists=True,
+            )
+        else:
+            normalized_payload = load_json_task_file(source_path, validate_exists=True)
+        targets, skipped_success = filter_pending_targets(normalized_payload)
+        if not targets:
+            raise ValueError("JSON 中的 targets 全部为已成功状态，无需重复导入。")
+
+        task_rows: list[dict[str, Any]] = []
+        for index, target in enumerate(targets, start=1):
+            if not isinstance(target, dict):
+                raise ValueError(f"targets[{index}] 不是对象。")
+            row = dict(target)
+            row["target_type"] = str(row.get("target_type") or "").strip()
+            row["message_mode"] = str(row.get("message_mode") or "").strip()
+            row["attachment_mode"] = str(row.get("attachment_mode") or "").strip()
+            row["attachments"] = self._loads_json_value(row.get("attachments"), default=[])
+            row["attachment_details"] = self._loads_json_value(row.get("attachment_details"), default=[])
+            row["send_status"] = str(row.get("send_status") or "").strip()
+            row["send_time"] = str(row.get("send_time") or "").strip()
+            row["error_msg"] = str(row.get("error_msg") or "").strip()
+            row["attachment_status"] = str(row.get("attachment_status") or "").strip()
+            row["source_json_index"] = self._to_int(
+                row.get("source_json_index") or row.get("source_target_index") or row.get("__source_json_index") or index,
+                default=index,
+            )
+            row["__source_json_index"] = row["source_json_index"]
+            row["__target_value"] = str(row.get("target_value") or "").strip()
+            row["__display_name_override"] = str(row.get("display_name") or "").strip()
+            if row["message_mode"] == "custom":
+                row["__custom_message_override"] = str(row.get("message") or "")
+            task_rows.append(row)
+
+        if not task_rows:
+            raise ValueError("JSON 任务经过过滤后没有可执行目标。")
+
+        common_attachments = self._loads_json_value(normalized_payload.get("common_attachments"), default=[])
+        start_time = str(normalized_payload.get("start_time") or "").strip()
+        end_time = str(normalized_payload.get("end_time") or "").strip()
+        resolved_log_path = str(log_path or "").strip() or build_log_path(source_path)
+        task_id = self.create_task_snapshot(
+            rows=task_rows,
+            filter_fields="",
+            filter_pattern="",
+            target_column="target_value",
+            template_text=str(normalized_payload.get("template_content") or ""),
+            source_batch_id=None,
+            source_mode=source_mode,
+            dataset_type=dataset_type,
+            task_kind=TASK_KIND_JSON,
+            source_json_path=str(source_path),
+            source_json_name=source_path.name,
+            json_start_time=start_time,
+            json_end_time=end_time,
+            common_attachments=common_attachments,
+            json_payload=normalized_payload,
+            json_log_path=resolved_log_path,
+        )
+        job_id = self.create_scheduled_job(
+            task_id=task_id,
+            scheduled_at=start_time,
+            interval_seconds=interval_seconds,
+            random_delay_min=random_delay_min,
+            random_delay_max=random_delay_max,
+            operator_name=operator_name,
+            report_to=report_to,
+            source_mode=source_mode,
+            dataset_type=dataset_type,
+            template_preview=template_preview.strip() or str(normalized_payload.get("template_content") or "")[:50],
+            total_count=len(task_rows),
+            task_kind=TASK_KIND_JSON,
+            source_json_path=str(source_path),
+            source_json_name=source_path.name,
+            wait_reason=f"导入时已跳过 {skipped_success} 个 success 目标。" if skipped_success else "",
+            log_path=resolved_log_path,
+            json_writeback_enabled=json_writeback_enabled,
+        )
+        return task_id, job_id
+
+    def append_send_event(
+        self,
+        *,
+        task_id: int,
+        task_item_id: int | None = None,
+        scheduled_job_id: int | None = None,
+        target_value: str = "",
+        target_type: str = "",
+        message_mode: str = "",
+        send_status: str = "",
+        send_time: str = "",
+        error_msg: str = "",
+        file_path: str = "",
+        file_type: str = "",
+        attachment_status: str = "",
+        source_json_path: str = "",
+        log_path: str = "",
+        event_data: dict[str, Any] | None = None,
+    ) -> int:
+        created_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        with self.connect() as connection:
+            cursor = connection.execute(
+                """
+                INSERT INTO send_task_events (
+                    task_id, task_item_id, scheduled_job_id, created_at, target_value, target_type,
+                    message_mode, send_status, send_time, error_msg, file_path, file_type,
+                    attachment_status, source_json_path, log_path, event_json
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    task_id,
+                    task_item_id,
+                    scheduled_job_id,
+                    created_at,
+                    target_value.strip(),
+                    target_type.strip(),
+                    message_mode.strip(),
+                    send_status.strip(),
+                    send_time.strip(),
+                    error_msg.strip(),
+                    file_path.strip(),
+                    file_type.strip(),
+                    attachment_status.strip(),
+                    source_json_path.strip(),
+                    log_path.strip(),
+                    self._normalize_json_dict_text(event_data),
+                ),
+            )
+        return int(cursor.lastrowid)
+
+    def list_task_events(self, task_id: int, limit: int = 200) -> list[SendTaskEvent]:
+        with self.connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT id, task_id, task_item_id, scheduled_job_id, created_at, target_value, target_type,
+                       message_mode, send_status, send_time, error_msg, file_path, file_type,
+                       attachment_status, source_json_path, log_path, event_json
+                FROM send_task_events
+                WHERE task_id = ?
+                ORDER BY id ASC
+                LIMIT ?
+                """,
+                (task_id, limit),
+            ).fetchall()
+        return [
+            SendTaskEvent(
+                event_id=int(row["id"]),
+                task_id=int(row["task_id"]),
+                task_item_id=self._to_optional_int(row["task_item_id"]),
+                scheduled_job_id=self._to_optional_int(row["scheduled_job_id"]),
+                created_at=str(row["created_at"] or ""),
+                target_value=str(row["target_value"] or ""),
+                target_type=str(row["target_type"] or ""),
+                message_mode=str(row["message_mode"] or ""),
+                send_status=str(row["send_status"] or ""),
+                send_time=str(row["send_time"] or ""),
+                error_msg=str(row["error_msg"] or ""),
+                file_path=str(row["file_path"] or ""),
+                file_type=str(row["file_type"] or ""),
+                attachment_status=str(row["attachment_status"] or ""),
+                source_json_path=str(row["source_json_path"] or ""),
+                log_path=str(row["log_path"] or ""),
+                event_json=str(row["event_json"] or ""),
+            )
+            for row in rows
+        ]
+
+    def update_task_item_result(
+        self,
+        task_item_id: int,
+        *,
+        send_status: str | None = None,
+        send_time: str | None = None,
+        error_msg: str | None = None,
+        attachment_status: str | None = None,
+        attachments: list[dict[str, Any]] | None = None,
+        attachment_details: list[dict[str, Any]] | None = None,
+        raw_updates: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        with self.connect() as connection:
+            row = connection.execute(
+                """
+                SELECT target_value, display_name_override, message_override, raw_json, target_type, message_mode,
+                       attachment_mode, attachments_json, send_status, send_time, error_msg,
+                       attachment_status, source_json_index, attachment_details_json
+                FROM send_task_items
+                WHERE id = ?
+                """,
+                (task_item_id,),
+            ).fetchone()
+            if row is None:
+                raise ValueError(f"任务项不存在：{task_item_id}")
+
+            record = json.loads(str(row["raw_json"] or "{}"))
+            if raw_updates:
+                record.update(raw_updates)
+            if send_status is not None:
+                record["send_status"] = send_status
+            if send_time is not None:
+                record["send_time"] = send_time
+            if error_msg is not None:
+                record["error_msg"] = error_msg
+            if attachment_status is not None:
+                record["attachment_status"] = attachment_status
+            if attachments is not None:
+                record["attachments"] = attachments
+            if attachment_details is not None:
+                record["attachment_details"] = attachment_details
+
+            connection.execute(
+                """
+                UPDATE send_task_items
+                SET raw_json = ?,
+                    send_status = ?,
+                    send_time = ?,
+                    error_msg = ?,
+                    attachment_status = ?,
+                    attachments_json = ?,
+                    attachment_details_json = ?
+                WHERE id = ?
+                """,
+                (
+                    json.dumps(self._clean_record_for_storage(record), ensure_ascii=False),
+                    str(record.get("send_status") or row["send_status"] or "").strip(),
+                    str(record.get("send_time") or row["send_time"] or "").strip(),
+                    str(record.get("error_msg") or row["error_msg"] or "").strip(),
+                    str(record.get("attachment_status") or row["attachment_status"] or "").strip(),
+                    self._normalize_json_list_text(record.get("attachments")),
+                    self._normalize_json_list_text(record.get("attachment_details")),
+                    task_item_id,
+                ),
+            )
+
+        record["__task_item_id"] = str(task_item_id)
+        record["__target_value"] = str(row["target_value"] or "")
+        if row["display_name_override"]:
+            record["__display_name_override"] = str(row["display_name_override"])
+        if row["message_override"]:
+            record["__custom_message_override"] = str(row["message_override"])
+        record["target_type"] = str(record.get("target_type") or row["target_type"] or "")
+        record["message_mode"] = str(record.get("message_mode") or row["message_mode"] or "")
+        record["attachment_mode"] = str(record.get("attachment_mode") or row["attachment_mode"] or "")
+        record["attachments"] = self._loads_json_value(record.get("attachments"), default=self._loads_json_value(row["attachments_json"], default=[]))
+        record["attachment_details"] = self._loads_json_value(record.get("attachment_details"), default=self._loads_json_value(row["attachment_details_json"], default=[]))
+        record["source_json_index"] = self._to_int(record.get("source_json_index") or row["source_json_index"], default=0)
+        return record
+
+    def sync_json_task_payload(
+        self,
+        task_id: int,
+        payload: dict[str, Any],
+        *,
+        json_end_time: str | None = None,
+        log_path: str | None = None,
+        common_attachments: list[dict[str, Any]] | None = None,
+    ) -> None:
+        last_sync_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        normalized_payload = self._normalize_json_dict_text(payload)
+        with self.connect() as connection:
+            connection.execute(
+                """
+                UPDATE send_tasks
+                SET json_payload = ?,
+                    json_end_time = COALESCE(?, json_end_time),
+                    json_log_path = COALESCE(?, json_log_path),
+                    common_attachments_json = COALESCE(?, common_attachments_json),
+                    total_count = ?,
+                    last_sync_at = ?
+                WHERE id = ?
+                """,
+                (
+                    normalized_payload,
+                    json_end_time,
+                    log_path,
+                    self._normalize_json_list_text(common_attachments) if common_attachments is not None else None,
+                    len(self._loads_json_value(payload.get("targets"), default=[])),
+                    last_sync_at,
+                    task_id,
+                ),
+            )
+
+    def mark_job_waiting_conflict(self, job_id: int, wait_reason: str, *, notify: bool = True) -> None:
+        notified_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S") if notify else ""
+        with self.connect() as connection:
+            connection.execute(
+                """
+                UPDATE scheduled_send_jobs
+                SET conflict_status = ?,
+                    wait_reason = ?,
+                    conflict_notified = ?,
+                    wait_notified_at = ?
+                WHERE id = ?
+                """,
+                (
+                    CONFLICT_STATUS_WAITING,
+                    wait_reason.strip(),
+                    1 if notify else 0,
+                    notified_at,
+                    job_id,
+                ),
+            )
+
+    def clear_job_waiting_conflict(self, job_id: int) -> None:
+        with self.connect() as connection:
+            connection.execute(
+                """
+                UPDATE scheduled_send_jobs
+                SET conflict_status = '',
+                    wait_reason = '',
+                    conflict_notified = 0,
+                    wait_notified_at = ''
+                WHERE id = ?
+                """,
+                (job_id,),
+            )
+
+    def get_job_source_path(self, job_id: int) -> str:
+        with self.connect() as connection:
+            row = connection.execute(
+                "SELECT source_json_path FROM scheduled_send_jobs WHERE id = ?",
+                (job_id,),
+            ).fetchone()
+        return "" if row is None else str(row["source_json_path"] or "")
+
+    def list_json_jobs(self, limit: int = 50) -> list[ScheduledSendJob]:
+        with self.connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT id, task_id, created_at, scheduled_at, status, interval_seconds,
+                       random_delay_min, random_delay_max, operator_name, report_to,
+                       source_mode, dataset_type, template_preview, total_count,
+                       started_at, completed_at, last_error, result_json,
+                       task_kind, source_json_path, source_json_name, wait_reason,
+                       conflict_status, conflict_notified, wait_notified_at, log_path,
+                       json_writeback_enabled
+                FROM scheduled_send_jobs
+                WHERE task_kind = ?
+                ORDER BY
+                    CASE status
+                        WHEN 'running' THEN 0
+                        WHEN 'pending' THEN 1
+                        ELSE 2
+                    END,
+                    scheduled_at ASC,
+                    id DESC
+                LIMIT ?
+                """,
+                (TASK_KIND_JSON, limit),
+            ).fetchall()
+        return [self._scheduled_job_from_row(row) for row in rows]
 
     def _migrate_legacy_current_batch(self) -> None:
         with self.connect() as connection:
@@ -800,6 +1409,15 @@ class LocalContactStore:
             completed_at=str(row["completed_at"] or ""),
             last_error=str(row["last_error"] or ""),
             result_json=str(row["result_json"] or ""),
+            task_kind=str(row["task_kind"] or ""),
+            source_json_path=str(row["source_json_path"] or ""),
+            source_json_name=str(row["source_json_name"] or ""),
+            wait_reason=str(row["wait_reason"] or ""),
+            conflict_status=str(row["conflict_status"] or ""),
+            conflict_notified=int(row["conflict_notified"] or 0),
+            wait_notified_at=str(row["wait_notified_at"] or ""),
+            log_path=str(row["log_path"] or ""),
+            json_writeback_enabled=int(row["json_writeback_enabled"] or 0),
         )
 
     def _clean_record_for_storage(self, row: dict[str, str]) -> dict[str, str]:
@@ -829,6 +1447,40 @@ class LocalContactStore:
             return []
         loaded = json.loads(str(raw_value))
         return [str(item) for item in loaded]
+
+    def _loads_json_value(self, raw_value: object, default: Any) -> Any:
+        if raw_value in (None, ""):
+            return json.loads(json.dumps(default, ensure_ascii=False))
+        if isinstance(raw_value, (list, dict)):
+            return json.loads(json.dumps(raw_value, ensure_ascii=False))
+        try:
+            return json.loads(str(raw_value))
+        except (TypeError, json.JSONDecodeError):
+            return json.loads(json.dumps(default, ensure_ascii=False))
+
+    def _normalize_json_list_text(self, raw_value: object) -> str:
+        if raw_value in (None, ""):
+            return "[]"
+        normalized = self._loads_json_value(raw_value, default=[])
+        if not isinstance(normalized, list):
+            normalized = [normalized]
+        return json.dumps(normalized, ensure_ascii=False)
+
+    def _normalize_json_dict_text(self, raw_value: object) -> str:
+        if raw_value in (None, ""):
+            return ""
+        normalized = self._loads_json_value(raw_value, default={})
+        if not isinstance(normalized, dict):
+            raise ValueError("JSON payload 必须是对象。")
+        return json.dumps(normalized, ensure_ascii=False)
+
+    def _to_int(self, value: object, default: int = 0) -> int:
+        if value in (None, ""):
+            return default
+        try:
+            return int(str(value))
+        except (TypeError, ValueError):
+            return default
 
     def _to_optional_int(self, value: object) -> int | None:
         if value in (None, ""):
