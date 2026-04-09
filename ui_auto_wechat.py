@@ -167,7 +167,7 @@ class WeChat:
         # 点击消息输入区下半部分获取焦点，避开上方工具按钮
         tool_bar = auto.ToolBarControl(Depth=15)
         move(tool_bar)
-        click_inside(tool_bar, y_ratio=0.78)
+        click_inside(tool_bar, y_ratio=0.78, y_offset=20)
     
     # 对当前输入框发送回车键，触发微信发送消息
     def press_enter(self):
