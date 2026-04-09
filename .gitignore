@@ -38,6 +38,7 @@ nul
 docs/easychat_local.sqlite3
 docs/ralph_store_smoke.sqlite3
 logs/
+task/
 *.easychat.log
 *.easychat.bak
 

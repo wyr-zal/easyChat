@@ -8,6 +8,46 @@ from PyQt5.QtWidgets import *
 from PyQt5.QtCore import *
 from PyQt5.QtGui import *
 
+STANDARD_DIALOG_BUTTON_STYLE = """
+QPushButton {
+    font-size: 12pt;
+    font-weight: 500;
+    min-height: 36px;
+    padding: 4px 12px;
+}
+QTableWidget QPushButton {
+    min-height: 30px;
+    padding: 2px 10px;
+}
+"""
+
+STANDARD_UI_FONT_SIZE = 12
+HELPER_UI_FONT_SIZE = 11
+
+
+def build_ui_font(widget: QWidget | None = None, *, point_size: int = STANDARD_UI_FONT_SIZE, bold: bool = False) -> QFont:
+    font = QFont(widget.font() if widget is not None else QFont())
+    font.setPointSize(point_size)
+    font.setBold(bold)
+    return font
+
+
+def apply_window_font_scaling(widget: QWidget) -> None:
+    widget.setFont(build_ui_font(widget, point_size=STANDARD_UI_FONT_SIZE))
+
+
+def style_helper_label(
+    label: QLabel,
+    *,
+    color: str | None = "#555",
+    point_size: int = HELPER_UI_FONT_SIZE,
+) -> QLabel:
+    label.setWordWrap(True)
+    label.setFont(build_ui_font(label, point_size=point_size))
+    if color:
+        label.setStyleSheet(f"color:{color};")
+    return label
+
 
 # 定时发送子线程类
 class ClockThread(QThread):
@@ -185,6 +225,8 @@ class MultiInputDialog(QDialog):
         default_values: list, 代表默认值，如['张三', '18']
         """
         super().__init__(parent)
+        apply_window_font_scaling(self)
+        self.setStyleSheet(STANDARD_DIALOG_BUTTON_STYLE)
         
         layout = QVBoxLayout(self)
         self.inputs = []
@@ -265,10 +307,14 @@ class FileDialog(QDialog):
     """
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
+        apply_window_font_scaling(self)
+        self.setStyleSheet(STANDARD_DIALOG_BUTTON_STYLE)
         self.inputs = []
         layout = QVBoxLayout(self)
         
-        layout.addWidget(QLabel("请指定发送给哪些用户(1,2,3代表发送给前三位用户)，如需全部发送请忽略此项"))
+        target_tip_label = QLabel("请指定发送给哪些用户(1,2,3代表发送给前三位用户)，如需全部发送请忽略此项")
+        style_helper_label(target_tip_label)
+        layout.addWidget(target_tip_label)
         input = QLineEdit(self)
         layout.addWidget(input)
         self.inputs.append(input)
@@ -331,6 +377,8 @@ class ContactFilterDialog(QDialog):
         parent=None,
     ) -> None:
         super().__init__(parent)
+        apply_window_font_scaling(self)
+        self.setStyleSheet(STANDARD_DIALOG_BUTTON_STYLE)
         self.setWindowTitle("从CSV导入联系人")
         self.resize(800, 480)
         self.setMinimumSize(720, 440)
@@ -340,8 +388,12 @@ class ContactFilterDialog(QDialog):
         layout.setContentsMargins(16, 16, 16, 16)
         layout.setSpacing(8)
 
+        helper_label = QLabel("支持多 CSV 拖入；筛选模式支持通配符或正则；规则留空时会按当前范围全量预览。")
+        style_helper_label(helper_label)
+        layout.addWidget(helper_label)
+
         # ── CSV 文件选择（多文件）──
-        layout.addWidget(QLabel("联系人CSV文件（可选多个，支持拖拽；用分号隔开）"))
+        layout.addWidget(QLabel("联系人CSV文件"))
         csv_layout = QHBoxLayout()
         self.csv_input = FileDropLineEdit(allow_multiple=True, suffixes=[".csv"], parent=self)
         self.csv_input.setText(";".join(csv_paths) if csv_paths else "")
@@ -354,21 +406,21 @@ class ContactFilterDialog(QDialog):
         layout.addLayout(csv_layout)
 
         # ── 筛选模式输入 ──
-        layout.addWidget(QLabel("筛选模式（支持通配符 * ? 或正则，留空=全选）"))
+        layout.addWidget(QLabel("筛选模式"))
         self.pattern_input = QLineEdit(self)
         self.pattern_input.setText(pattern)
         self.pattern_input.setPlaceholderText("例：*陈* 或 ^张.* 或留空全选")
         layout.addWidget(self.pattern_input)
 
         # ── 参与匹配的字段 ──
-        layout.addWidget(QLabel("筛选时参与匹配的字段（英文逗号分隔，默认：显示名称,备注,昵称）"))
+        layout.addWidget(QLabel("匹配字段"))
         self.fields_input = QLineEdit(self)
         self.fields_input.setText(fields)
         self.fields_input.setPlaceholderText("显示名称,备注,昵称")
         layout.addWidget(self.fields_input)
 
         # ── 联系人类型 ──
-        layout.addWidget(QLabel("联系人类型过滤（好友 / 群聊 / 留空=全部）"))
+        layout.addWidget(QLabel("联系人类型"))
         self.contact_type_input = QLineEdit(self)
         self.contact_type_input.setText(contact_type)
         self.contact_type_input.setPlaceholderText("留空则好友和群聊都导入")
@@ -439,6 +491,8 @@ class ContactConfirmDialog(QDialog):
         contacts: 每项为 dict，包含 显示名称/备注/微信号/类型/_search_key
         """
         super().__init__(parent)
+        apply_window_font_scaling(self)
+        self.setStyleSheet(STANDARD_DIALOG_BUTTON_STYLE)
         self.setWindowTitle("确认导入联系人")
         self.resize(860, 520)
         self.setMinimumSize(700, 400)
@@ -454,6 +508,7 @@ class ContactConfirmDialog(QDialog):
         # ── 顶部信息栏 ──
         top_bar = QHBoxLayout()
         self.count_label = QLabel()
+        self.count_label.setFont(build_ui_font(self.count_label, point_size=HELPER_UI_FONT_SIZE))
         top_bar.addWidget(self.count_label)
         top_bar.addStretch()
 
@@ -575,6 +630,8 @@ class FilterResultDialog(QDialog):
 
     def __init__(self, contacts: list[dict], parent=None) -> None:
         super().__init__(parent)
+        apply_window_font_scaling(self)
+        self.setStyleSheet(STANDARD_DIALOG_BUTTON_STYLE)
         self.setWindowTitle("筛选结果")
         self.resize(980, 560)
         self.setMinimumSize(820, 420)
@@ -588,13 +645,13 @@ class FilterResultDialog(QDialog):
 
         header_layout = QHBoxLayout()
         self.count_label = QLabel()
+        self.count_label.setFont(build_ui_font(self.count_label, point_size=HELPER_UI_FONT_SIZE))
         header_layout.addWidget(self.count_label)
         header_layout.addStretch()
         layout.addLayout(header_layout)
 
         helper_label = QLabel("请先核对筛选结果；不想发送的对象可直接点行尾“删除”，确认无误后再导入发送计划。")
-        helper_label.setWordWrap(True)
-        helper_label.setStyleSheet("color:#555;")
+        style_helper_label(helper_label)
         layout.addWidget(helper_label)
 
         self.table = QTableWidget(self)

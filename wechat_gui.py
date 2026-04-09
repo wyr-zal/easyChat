@@ -24,6 +24,9 @@ from ui_auto_wechat import WeChat
 from module import *
 from wechat_locale import WeChatLocale
 
+PRIMARY_UI_FONT_SIZE = 12
+HELPER_UI_FONT_SIZE = 11
+
 
 class WechatGUI(QWidget):
 
@@ -149,6 +152,37 @@ class WechatGUI(QWidget):
     def hotkey_press(self):
         print("hotkey pressed")
         self.hotkey_pressed = True
+
+    def apply_font_scaling(self):
+        base_font = QFont(self.font())
+        base_font.setPointSize(PRIMARY_UI_FONT_SIZE)
+        self.setFont(base_font)
+        self.setStyleSheet(
+            """
+            QPushButton {
+                font-size: 12pt;
+                font-weight: 500;
+                min-height: 36px;
+                padding: 4px 12px;
+            }
+            QSpinBox,
+            QLineEdit {
+                min-height: 34px;
+            }
+            """
+        )
+
+    def build_helper_font(self, point_size: int = HELPER_UI_FONT_SIZE) -> QFont:
+        helper_font = QFont(self.font())
+        helper_font.setPointSize(point_size)
+        return helper_font
+
+    def style_helper_label(self, label: QLabel, *, color: str | None = None, point_size: int = HELPER_UI_FONT_SIZE) -> QLabel:
+        label.setWordWrap(True)
+        label.setFont(self.build_helper_font(point_size))
+        if color:
+            label.setStyleSheet(f"color:{color};")
+        return label
 
     # 选择用户界面的初始化
     def init_choose_contacts(self):
@@ -501,6 +535,7 @@ class WechatGUI(QWidget):
         vbox.stretch(1)
 
         info = QLabel("定时发送（目前未开始）")
+        self.style_helper_label(info, color="#555")
         add_btn = QPushButton("添加时间")
         add_btn.clicked.connect(add_contact)
         del_btn = QPushButton("删除时间")
@@ -708,7 +743,9 @@ class WechatGUI(QWidget):
         vbox_left = QVBoxLayout()
 
         # 提示信息
-        info = QLabel("添加要发送的内容（程序将按顺序发送）")
+        info = QLabel("添加要发送的内容")
+        helper_label = QLabel("程序会按消息列表中的顺序依次发送。")
+        self.style_helper_label(helper_label, color="#555")
 
         # 输入内容框
         self.msg = MyListWidget()
@@ -770,6 +807,7 @@ class WechatGUI(QWidget):
 
 
         vbox_left.addWidget(info)
+        vbox_left.addWidget(helper_label)
         vbox_left.addWidget(self.msg)
         vbox_left.addWidget(send_interval)
         vbox_left.addLayout(delay_row)
@@ -809,6 +847,7 @@ class WechatGUI(QWidget):
     def initUI(self):
         # 垂直布局
         vbox = QVBoxLayout()
+        self.apply_font_scaling()
 
         # 关于自动打开微信界面的按钮
         self.wechat_notice_btn = QPushButton("关于自动打开微信界面", self)
