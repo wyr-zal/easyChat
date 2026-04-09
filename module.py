@@ -3,6 +3,7 @@ import time
 import datetime
 import threading
 import keyboard
+from pathlib import Path
 
 from PyQt5.QtWidgets import *
 from PyQt5.QtCore import *
@@ -716,6 +717,169 @@ class FilterResultDialog(QDialog):
 
     def get_remaining_contacts(self) -> list[dict]:
         return list(self._contacts)
+
+
+class AttachmentManageDialog(QDialog):
+    """行附件管理弹窗：支持查看、追加、删除、清空与恢复通用附件。"""
+
+    SUPPORTED_SUFFIXES = {".pdf", ".jpg", ".jpeg", ".png", ".bmp", ".webp"}
+    IMAGE_SUFFIXES = {".jpg", ".jpeg", ".png", ".bmp", ".webp"}
+
+    def __init__(self, attachments: list[dict] | None = None, *, start_dir: str = "", parent=None) -> None:
+        super().__init__(parent)
+        apply_window_font_scaling(self)
+        self.setStyleSheet(STANDARD_DIALOG_BUTTON_STYLE)
+        self.setWindowTitle("管理当前目标附件")
+        self.resize(860, 520)
+        self.setMinimumSize(720, 420)
+        self.setSizeGripEnabled(True)
+
+        self._attachments = [self._normalize_attachment_item(item) for item in (attachments or [])]
+        self._start_dir = str(start_dir or "")
+        self.use_common_attachments = False
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(14, 14, 14, 14)
+        layout.setSpacing(8)
+
+        self.count_label = QLabel()
+        self.count_label.setFont(build_ui_font(self.count_label, point_size=HELPER_UI_FONT_SIZE))
+        layout.addWidget(self.count_label)
+
+        helper_label = QLabel("这里会先展示当前已选附件。你可以继续追加多个附件、删除选中附件，或恢复为使用通用附件。")
+        style_helper_label(helper_label)
+        layout.addWidget(helper_label)
+
+        self.table = QTableWidget(self)
+        self.table.setColumnCount(2)
+        self.table.setHorizontalHeaderLabels(["类型", "路径"])
+        self.table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeToContents)
+        self.table.horizontalHeader().setSectionResizeMode(1, QHeaderView.Stretch)
+        self.table.setSelectionBehavior(QAbstractItemView.SelectRows)
+        self.table.setEditTriggers(QAbstractItemView.NoEditTriggers)
+        self.table.verticalHeader().setVisible(False)
+        layout.addWidget(self.table, stretch=1)
+
+        action_layout = QHBoxLayout()
+        self.add_button = QPushButton("添加附件")
+        self.add_button.setMinimumWidth(120)
+        self.add_button.clicked.connect(self._add_attachments)
+        self.remove_button = QPushButton("删除选中附件")
+        self.remove_button.setMinimumWidth(140)
+        self.remove_button.clicked.connect(self._remove_selected)
+        self.clear_button = QPushButton("清空自定义附件")
+        self.clear_button.setMinimumWidth(140)
+        self.clear_button.clicked.connect(self._clear_attachments)
+        self.restore_button = QPushButton("恢复通用附件")
+        self.restore_button.setMinimumWidth(140)
+        self.restore_button.clicked.connect(self._restore_common_attachments)
+        action_layout.addWidget(self.add_button)
+        action_layout.addWidget(self.remove_button)
+        action_layout.addWidget(self.clear_button)
+        action_layout.addWidget(self.restore_button)
+        action_layout.addStretch(1)
+        layout.addLayout(action_layout)
+
+        button_layout = QHBoxLayout()
+        self.ok_button = QPushButton("保存")
+        self.ok_button.setMinimumWidth(120)
+        self.ok_button.clicked.connect(self.accept)
+        cancel_button = QPushButton("取消")
+        cancel_button.setMinimumWidth(100)
+        cancel_button.clicked.connect(self.reject)
+        button_layout.addStretch()
+        button_layout.addWidget(self.ok_button)
+        button_layout.addWidget(cancel_button)
+        layout.addLayout(button_layout)
+
+        self._refresh_table()
+
+    def _infer_attachment_type(self, file_path: str) -> str:
+        suffix = Path(file_path).suffix.lower()
+        if suffix == ".pdf":
+            return "pdf"
+        if suffix in self.IMAGE_SUFFIXES:
+            return "image"
+        raise ValueError(f"附件类型不合法：{file_path}")
+
+    def _normalize_attachment_item(self, item: str | dict) -> dict[str, str]:
+        if isinstance(item, dict):
+            file_path = str(item.get("file_path") or item.get("path") or "").strip()
+            file_type = str(item.get("file_type") or "").strip().lower()
+        else:
+            file_path = str(item or "").strip()
+            file_type = ""
+
+        if file_path == "":
+            raise ValueError("附件路径不能为空。")
+
+        resolved_path = str(Path(file_path).expanduser().resolve(strict=False))
+        suffix = Path(resolved_path).suffix.lower()
+        if suffix not in self.SUPPORTED_SUFFIXES:
+            raise ValueError(f"附件类型不合法：{resolved_path}")
+        if not Path(resolved_path).exists():
+            raise ValueError(f"附件不存在：{resolved_path}")
+        return {
+            "file_path": resolved_path,
+            "file_type": file_type or self._infer_attachment_type(resolved_path),
+        }
+
+    def _refresh_table(self) -> None:
+        self.table.setRowCount(len(self._attachments))
+        for row_index, item in enumerate(self._attachments):
+            self.table.setItem(row_index, 0, QTableWidgetItem(str(item.get("file_type") or "")))
+            self.table.setItem(row_index, 1, QTableWidgetItem(str(item.get("file_path") or "")))
+        self.table.resizeRowsToContents()
+        count = len(self._attachments)
+        self.count_label.setText(f"当前已选择 {count} 个自定义附件。")
+        has_items = count > 0
+        self.remove_button.setEnabled(has_items)
+        self.clear_button.setEnabled(has_items)
+
+    def _add_attachments(self) -> None:
+        start_dir = self._start_dir
+        if self._attachments:
+            start_dir = str(Path(self._attachments[-1]["file_path"]).parent)
+        paths, _ = QFileDialog.getOpenFileNames(
+            self,
+            "选择当前目标的自定义附件",
+            start_dir,
+            "附件文件(*.pdf *.jpg *.jpeg *.png *.bmp *.webp)",
+        )
+        if not paths:
+            return
+
+        existing_paths = {str(item.get("file_path") or "") for item in self._attachments}
+        for raw_path in paths:
+            item = self._normalize_attachment_item(raw_path)
+            if item["file_path"] not in existing_paths:
+                self._attachments.append(item)
+                existing_paths.add(item["file_path"])
+        self._start_dir = str(Path(paths[0]).parent)
+        self._refresh_table()
+
+    def _remove_selected(self) -> None:
+        rows = sorted({index.row() for index in self.table.selectionModel().selectedRows()}, reverse=True)
+        if not rows:
+            QMessageBox.information(self, "未选择附件", "请先在附件表中选择要删除的附件。")
+            return
+        for row in rows:
+            if 0 <= row < len(self._attachments):
+                self._attachments.pop(row)
+        self._refresh_table()
+
+    def _clear_attachments(self) -> None:
+        if not self._attachments:
+            return
+        self._attachments = []
+        self._refresh_table()
+
+    def _restore_common_attachments(self) -> None:
+        self.use_common_attachments = True
+        self.accept()
+
+    def get_attachments(self) -> list[dict[str, str]]:
+        return [dict(item) for item in self._attachments]
 
 
 class MySpinBox(QWidget):

@@ -161,6 +161,9 @@ class WeChat:
                 click(item)
                 break
 
+        self.focus_message_input()
+
+    def focus_message_input(self) -> None:
         # 点击消息输入区下半部分获取焦点，避开上方工具按钮
         tool_bar = auto.ToolBarControl(Depth=15)
         move(tool_bar)
@@ -180,6 +183,16 @@ class WeChat:
         # 等待粘贴
         time.sleep(0.3)
         auto.SendKeys("{Ctrl}v")
+
+    def prepare_text_message(self, name: str, text: str, search_user: bool = True) -> None:
+        """定位到聊天输入框并预填文本草稿，但不发送。"""
+        if search_user:
+            self.get_contact(name)
+        else:
+            self.focus_message_input()
+
+        if text is not None and str(text) != "":
+            self.paste_text(text)
 
     def send_msg(self, name, at_names: List[str] = None, text: str = None, search_user: bool = True) -> bool:
         """
@@ -223,12 +236,7 @@ class WeChat:
 
     def send_text_message(self, name: str, text: str, search_user: bool = True) -> None:
         """不校验聊天记录，直接完成文本发送。"""
-        if search_user:
-            self.get_contact(name)
-
-        if text is not None:
-            self.paste_text(text)
-
+        self.prepare_text_message(name, text, search_user=search_user)
         self.press_enter()
 
     # 搜索指定用户名的联系人发送文件

@@ -38,6 +38,9 @@ class WeChatSenderService:
     def __init__(self, path: str = "", locale: str = "zh-CN") -> None:
         self.wechat = WeChat(path=path, locale=locale)
 
+    def prepare_text_message(self, wechat_id: str, message: str, search_user: bool = True) -> None:
+        self.wechat.prepare_text_message(wechat_id, message, search_user=search_user)
+
     def send_text_message(self, wechat_id: str, message: str, search_user: bool = True) -> None:
         self.wechat.send_text_message(wechat_id, message, search_user=search_user)
 
@@ -138,8 +141,13 @@ class PersonalizedSendThread(QThread):
         try:
             delay_plan = self._build_random_delay_plan(total)
             summary["random_delay_count"] = len(delay_plan)
+            import uiautomation as auto
+
+            sender = WeChatSenderService(path=self.wechat_path, locale=self.locale)
             if self.debug_mode:
-                self._emit_log("调试模式已开启：本次不会实际发送消息或自动汇报。")
+                self._emit_log("调试模式已开启：本次会自动定位联系人并预填消息草稿，但不会按回车发送；附件与自动汇报也不会真实发送。")
+
+            with auto.UIAutomationInitializerInThread():
                 for index, row in enumerate(self.records, start=1):
                     if self._stop_requested:
                         summary["stopped"] = True
@@ -147,7 +155,7 @@ class PersonalizedSendThread(QThread):
                         break
 
                     row_result = self._execute_single_target(
-                        sender=None,
+                        sender=sender,
                         row=row,
                         index=index,
                         total=total,
@@ -188,59 +196,6 @@ class PersonalizedSendThread(QThread):
                                 summary["stopped"] = True
                                 self._emit_log("用户已停止发送。")
                                 break
-            else:
-                import uiautomation as auto
-
-                sender = WeChatSenderService(path=self.wechat_path, locale=self.locale)
-                with auto.UIAutomationInitializerInThread():
-                    for index, row in enumerate(self.records, start=1):
-                        if self._stop_requested:
-                            summary["stopped"] = True
-                            self._emit_log("用户已停止发送。")
-                            break
-
-                        row_result = self._execute_single_target(
-                            sender=sender,
-                            row=row,
-                            index=index,
-                            total=total,
-                        )
-                        stopped_after_target = bool(row_result.pop("_stop_requested", False))
-                        summary["targets"].append(row_result)
-                        summary["attachments_sent"] += int(row_result.get("attachment_sent_count", 0))
-                        summary["attachments_failed"] += int(row_result.get("attachment_failed_count", 0))
-
-                        send_status = str(row_result.get("send_status") or "")
-                        if send_status == SEND_STATUS_SUCCESS:
-                            summary["sent"] += 1
-                        elif send_status == SEND_STATUS_SKIPPED:
-                            summary["skipped"] += 1
-                        else:
-                            summary["failed"] += 1
-
-                        self.progress.emit(index, total, str(row_result.get("target_value") or ""))
-                        self._safe_target_result_callback(row_result)
-
-                        if stopped_after_target:
-                            summary["stopped"] = True
-                            self._emit_log("用户已停止发送。")
-                            break
-
-                        if index < total:
-                            self._sleep_with_stop_check(self.interval_seconds)
-                            if self._stop_requested:
-                                summary["stopped"] = True
-                                self._emit_log("用户已停止发送。")
-                                break
-
-                            extra_delay = delay_plan.get(index)
-                            if extra_delay:
-                                self._emit_log(f"[{index}/{total}] 随机延迟事务：等待 {extra_delay} 秒。")
-                                self._sleep_with_stop_check(extra_delay)
-                                if self._stop_requested:
-                                    summary["stopped"] = True
-                                    self._emit_log("用户已停止发送。")
-                                    break
 
         except Exception as exc:
             summary["error"] = str(exc)
@@ -271,7 +226,7 @@ class PersonalizedSendThread(QThread):
     def _execute_single_target(
         self,
         *,
-        sender: WeChatSenderService | None,
+        sender: WeChatSenderService,
         row: dict[str, str],
         index: int,
         total: int,
@@ -297,6 +252,7 @@ class PersonalizedSendThread(QThread):
             "attachment_failed_count": 0,
             "text_status": TEXT_STATUS_SKIPPED,
             "send_status": SEND_STATUS_SKIPPED,
+            "debug_prepared": False,
             "error_msg": "",
             "started_at": started_at.strftime("%Y-%m-%d %H:%M:%S"),
             "send_time": "",
@@ -318,19 +274,29 @@ class PersonalizedSendThread(QThread):
             return self._finalize_row_result(row_result, started_at)
 
         text_error = ""
-        if has_message:
-            if self.debug_mode:
+        if self.debug_mode:
+            try:
+                sender.prepare_text_message(
+                    target_value,
+                    message if has_message else "",
+                    search_user=True,
+                )
                 row_result["text_status"] = TEXT_STATUS_SKIPPED
-            else:
-                assert sender is not None
-                try:
-                    sender.send_text_message(target_value, message, search_user=True)
-                    row_result["text_status"] = TEXT_STATUS_SUCCESS
-                except Exception as exc:
-                    text_error = str(exc)
-                    row_result["text_status"] = TEXT_STATUS_FAILED
-                    row_result["error_msg"] = text_error
-                    self._emit_log(f"[{index}/{total}] 文本发送失败：{target_value}，错误：{exc}", row_result)
+                row_result["debug_prepared"] = True
+            except Exception as exc:
+                text_error = str(exc)
+                row_result["text_status"] = TEXT_STATUS_FAILED
+                row_result["error_msg"] = text_error
+                self._emit_log(f"[{index}/{total}] 调试预填失败：{target_value}，错误：{exc}", row_result)
+        elif has_message:
+            try:
+                sender.send_text_message(target_value, message, search_user=True)
+                row_result["text_status"] = TEXT_STATUS_SUCCESS
+            except Exception as exc:
+                text_error = str(exc)
+                row_result["text_status"] = TEXT_STATUS_FAILED
+                row_result["error_msg"] = text_error
+                self._emit_log(f"[{index}/{total}] 文本发送失败：{target_value}，错误：{exc}", row_result)
         else:
             row_result["text_status"] = TEXT_STATUS_SKIPPED
 
@@ -339,6 +305,7 @@ class PersonalizedSendThread(QThread):
         attachment_failed_count = 0
         attachment_error = ""
         stop_error = "用户手动停止，未继续发送剩余附件。"
+        debug_detail_message = ""
 
         if attachments and row_result["text_status"] != TEXT_STATUS_FAILED:
             if self.debug_mode:
@@ -352,6 +319,7 @@ class PersonalizedSendThread(QThread):
                         }
                     )
                 attachment_error = debug_skip_message
+                debug_detail_message = "调试模式：已定位联系人并预填文本草稿，附件未实际发送。"
             elif self._stop_requested:
                 attachment_failed_count += self._append_interrupted_attachments(
                     attachment_results,
@@ -381,7 +349,6 @@ class PersonalizedSendThread(QThread):
                         "error_msg": "",
                     }
                     try:
-                        assert sender is not None
                         sender.send_file(
                             target_value,
                             file_path,
@@ -398,13 +365,14 @@ class PersonalizedSendThread(QThread):
                     attachment_results.append(attachment_item)
 
         elif attachments and row_result["text_status"] == TEXT_STATUS_FAILED:
+            attachment_skip_reason = "调试预填失败，未执行附件发送。" if self.debug_mode else "文本发送失败，未执行附件发送。"
             for attachment in attachments:
                 attachment_results.append(
                     {
                         "file_path": str(attachment.get("file_path") or ""),
                         "file_type": str(attachment.get("file_type") or ""),
                         "attachment_status": ATTACHMENT_STATUS_SKIPPED,
-                        "error_msg": "文本发送失败，未执行附件发送。",
+                        "error_msg": attachment_skip_reason,
                     }
                 )
 
@@ -425,7 +393,15 @@ class PersonalizedSendThread(QThread):
         )
         row_result["error_msg"] = row_result["error_msg"] or attachment_error or text_error
         if self.debug_mode and row_result["send_status"] == SEND_STATUS_SKIPPED:
-            row_result["error_msg"] = row_result["error_msg"] or debug_skip_message
+            desired_debug_message = debug_skip_message
+            if has_message and has_attachments:
+                desired_debug_message = debug_detail_message
+            elif has_message:
+                desired_debug_message = "调试模式：已定位联系人并预填文本草稿，未按回车发送。"
+            elif has_attachments and row_result.get("debug_prepared"):
+                desired_debug_message = "调试模式：已定位联系人，但附件未实际发送。"
+            if row_result["error_msg"] in {"", debug_skip_message}:
+                row_result["error_msg"] = desired_debug_message
         if self._stop_requested:
             row_result["_stop_requested"] = True
 
@@ -590,6 +566,8 @@ class PersonalizedSendThread(QThread):
         if send_status == SEND_STATUS_PARTIAL_SUCCESS:
             return "文本成功，附件失败"
         if send_status == SEND_STATUS_SKIPPED:
+            if self.debug_mode and bool(row_result.get("debug_prepared")):
+                return "调试预填完成（未发送）"
             return "已跳过"
         return "发送失败"
 
