@@ -722,7 +722,6 @@ class FilterResultDialog(QDialog):
 class AttachmentManageDialog(QDialog):
     """行附件管理弹窗：支持查看、追加、删除、清空与恢复通用附件。"""
 
-    SUPPORTED_SUFFIXES = {".pdf", ".jpg", ".jpeg", ".png", ".bmp", ".webp"}
     IMAGE_SUFFIXES = {".jpg", ".jpeg", ".png", ".bmp", ".webp"}
 
     def __init__(self, attachments: list[dict] | None = None, *, start_dir: str = "", parent=None) -> None:
@@ -800,7 +799,7 @@ class AttachmentManageDialog(QDialog):
             return "pdf"
         if suffix in self.IMAGE_SUFFIXES:
             return "image"
-        raise ValueError(f"附件类型不合法：{file_path}")
+        return "file"
 
     def _normalize_attachment_item(self, item: str | dict) -> dict[str, str]:
         if isinstance(item, dict):
@@ -814,9 +813,6 @@ class AttachmentManageDialog(QDialog):
             raise ValueError("附件路径不能为空。")
 
         resolved_path = str(Path(file_path).expanduser().resolve(strict=False))
-        suffix = Path(resolved_path).suffix.lower()
-        if suffix not in self.SUPPORTED_SUFFIXES:
-            raise ValueError(f"附件类型不合法：{resolved_path}")
         if not Path(resolved_path).exists():
             raise ValueError(f"附件不存在：{resolved_path}")
         return {
@@ -844,7 +840,7 @@ class AttachmentManageDialog(QDialog):
             self,
             "选择当前目标的自定义附件",
             start_dir,
-            "附件文件(*.pdf *.jpg *.jpeg *.png *.bmp *.webp)",
+            "所有文件(*.*)",
         )
         if not paths:
             return

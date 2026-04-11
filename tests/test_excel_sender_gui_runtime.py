@@ -12,7 +12,7 @@ from PyQt5.QtWidgets import QMessageBox
 from PyQt5.QtWidgets import QPushButton
 
 from excel_sender_gui import ExcelSenderGUI
-from local_contact_store import LocalContactStore, SOURCE_MODE_JSON
+from local_contact_store import LocalContactStore, SOURCE_MODE_JSON, SCHEDULE_STATUS_FAILED
 
 
 class _RunningThread:
@@ -45,6 +45,20 @@ class ExcelSenderGuiRuntimeTests(unittest.TestCase):
                 )
                 self.assertEqual(len(items), 1)
                 self.assertEqual(items[0]["file_type"], "pdf")
+            finally:
+                window.close()
+
+    def test_normalize_attachment_items_accepts_generic_file(self) -> None:
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp_dir:
+            tmp = Path(tmp_dir)
+            zip_file = tmp / "archive.zip"
+            zip_file.write_bytes(b"PK\x03\x04")
+
+            window = self.create_window(tmp)
+            try:
+                items = window.normalize_attachment_items([{"file_path": str(zip_file), "file_type": "file"}])
+                self.assertEqual(len(items), 1)
+                self.assertEqual(items[0]["file_type"], "file")
             finally:
                 window.close()
 
@@ -98,6 +112,23 @@ class ExcelSenderGuiRuntimeTests(unittest.TestCase):
                 self.assertEqual(window.schedule_status_label.font().pointSize(), base_size - 1)
                 self.assertEqual(window.filter_status_label.font().pointSize(), base_size - 1)
                 self.assertEqual(window.send_status_label.font().pointSize(), base_size - 1)
+            finally:
+                window.close()
+
+    def test_compact_ui_shortens_button_labels_after_resize(self) -> None:
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp_dir:
+            tmp = Path(tmp_dir)
+            window = self.create_window(tmp)
+            try:
+                window.show()
+                self.app.processEvents()
+                self.assertEqual(window.start_button.text(), "立即开始发送")
+                window.resize(1000, 700)
+                self.app.processEvents()
+                self.assertEqual(window.start_button.text(), "开始发送")
+                self.assertEqual(window.preview_button.text(), "刷新计划")
+                self.assertEqual(window.import_json_button.text(), "导入 JSON")
+                self.assertEqual(window.refresh_schedule_button.text(), "刷新列表")
             finally:
                 window.close()
 
@@ -333,6 +364,136 @@ class ExcelSenderGuiRuntimeTests(unittest.TestCase):
                 attachment_button = next(button for button in buttons if button.text().startswith("附件"))
                 self.assertEqual(attachment_button.text(), "附件")
                 self.assertIn("当前使用通用附件", attachment_button.toolTip())
+            finally:
+                window.close()
+
+    def test_delete_selected_scheduled_job_only_removes_queue_record(self) -> None:
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp_dir:
+            tmp = Path(tmp_dir)
+            window = self.create_window(tmp)
+            store = window.local_store
+            task_id = store.create_task_snapshot(
+                rows=[{"__target_value": "A", "target_type": "person"}],
+                filter_fields="",
+                filter_pattern="",
+                target_column="target_value",
+                template_text="hello",
+                source_batch_id=None,
+                source_mode="file",
+            )
+            job_id = store.create_scheduled_job(
+                task_id=task_id,
+                scheduled_at="2099-01-01 00:00:00",
+                interval_seconds=1,
+                random_delay_min=0,
+                random_delay_max=0,
+                operator_name="tester",
+                report_to="tester",
+                source_mode="file",
+                dataset_type="all",
+                template_preview="hello",
+                total_count=1,
+            )
+            try:
+                window.refresh_scheduled_jobs()
+                window.select_scheduled_job(job_id)
+                with mock.patch("excel_sender_gui.QMessageBox.question", return_value=QMessageBox.Yes):
+                    window.delete_selected_scheduled_job()
+                self.assertEqual(store.list_scheduled_jobs(limit=10), [])
+                self.assertIsNotNone(store.get_task_details(task_id))
+            finally:
+                window.close()
+
+    def test_continue_button_enabled_for_failed_job_with_remaining_records(self) -> None:
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp_dir:
+            tmp = Path(tmp_dir)
+            json_path = tmp / "task.json"
+            json_path.write_text("{}", encoding="utf-8")
+
+            window = self.create_window(tmp)
+            store = window.local_store
+            task_id = store.create_task_snapshot(
+                rows=[
+                    {"__target_value": "A", "target_type": "person", "send_status": "success"},
+                    {"__target_value": "B", "target_type": "person", "send_status": "failed"},
+                    {"__target_value": "C", "target_type": "person", "send_status": ""},
+                ],
+                filter_fields="",
+                filter_pattern="",
+                target_column="target_value",
+                template_text="hello",
+                source_batch_id=None,
+                source_mode=SOURCE_MODE_JSON,
+                task_kind="json",
+                source_json_path=str(json_path),
+                source_json_name=json_path.name,
+                json_start_time="2099-01-01 00:00:00",
+            )
+            job_id = store.create_scheduled_job(
+                task_id=task_id,
+                scheduled_at="2099-01-01 00:00:00",
+                interval_seconds=1,
+                random_delay_min=0,
+                random_delay_max=0,
+                operator_name="tester",
+                report_to="tester",
+                source_mode=SOURCE_MODE_JSON,
+                dataset_type="all",
+                template_preview="hello",
+                total_count=3,
+                task_kind="json",
+                source_json_path=str(json_path),
+                source_json_name=json_path.name,
+            )
+            store.complete_scheduled_job(job_id, status=SCHEDULE_STATUS_FAILED, result={"failed": 1}, last_error="boom")
+            try:
+                window.refresh_scheduled_jobs()
+                window.select_scheduled_job(job_id)
+                self.app.processEvents()
+                self.assertTrue(window.continue_button.isEnabled())
+            finally:
+                window.close()
+
+    def test_preview_selected_scheduled_job_opens_dialog(self) -> None:
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp_dir:
+            tmp = Path(tmp_dir)
+            window = self.create_window(tmp)
+            store = window.local_store
+            task_id = store.create_task_snapshot(
+                rows=[{"__target_value": "A", "target_type": "person"}],
+                filter_fields="",
+                filter_pattern="",
+                target_column="target_value",
+                template_text="hello",
+                source_batch_id=None,
+                source_mode="file",
+            )
+            job_id = store.create_scheduled_job(
+                task_id=task_id,
+                scheduled_at="2099-01-01 00:00:00",
+                interval_seconds=1,
+                random_delay_min=0,
+                random_delay_max=0,
+                operator_name="tester",
+                report_to="tester",
+                source_mode="file",
+                dataset_type="all",
+                template_preview="hello",
+                total_count=1,
+            )
+            captured = {}
+
+            def _fake_exec(dialog_self):
+                tables = dialog_self.findChildren(type(window.preview_table))
+                captured["row_count"] = tables[0].rowCount() if tables else 0
+                return 0
+
+            try:
+                window.refresh_scheduled_jobs()
+                window.select_scheduled_job(job_id)
+                with mock.patch("excel_sender_gui.QDialog.exec_", new=_fake_exec):
+                    window.preview_selected_scheduled_job()
+                self.assertEqual(captured.get("row_count"), 1)
             finally:
                 window.close()
 

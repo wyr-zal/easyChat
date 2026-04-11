@@ -10,6 +10,7 @@ from local_contact_store import (
     CONFLICT_STATUS_WAITING,
     DEFAULT_LOCAL_DB_PATH,
     LocalContactStore,
+    SCHEDULE_MODE_CRON,
     SOURCE_MODE_JSON,
     TASK_KIND_JSON,
 )
@@ -28,6 +29,8 @@ class LocalContactStoreJsonTests(unittest.TestCase):
             payload = {
                 "start_time": "2026-04-07 20:00:00",
                 "end_time": "",
+                "schedule_mode": "cron",
+                "schedule_value": "0 9 * * 1-5",
                 "total_count": 3,
                 "template_content": "您好",
                 "common_attachments": [{"file_path": str(pdf_path), "file_type": "pdf"}],
@@ -117,6 +120,12 @@ class LocalContactStoreJsonTests(unittest.TestCase):
             job = store.list_json_jobs(limit=10)[0]
             self.assertEqual(job.conflict_status, CONFLICT_STATUS_WAITING)
             self.assertEqual(job.source_json_path, str(json_path))
+            self.assertEqual(job.schedule_mode, SCHEDULE_MODE_CRON)
+            self.assertEqual(job.schedule_value, "0 9 * * 1-5")
+
+            self.assertTrue(store.delete_scheduled_job(job_id))
+            self.assertEqual(store.list_json_jobs(limit=10), [])
+            self.assertIsNotNone(store.get_task_details(task_id))
 
             del store
             gc.collect()

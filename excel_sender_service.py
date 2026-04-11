@@ -123,6 +123,7 @@ class PersonalizedSendThread(QThread):
             "failed": 0,
             "skipped": 0,
             "stopped": False,
+            "stopped_by_error": False,
             "error": "",
             "started_at": start_time.strftime("%Y-%m-%d %H:%M:%S"),
             "finished_at": "",
@@ -135,6 +136,8 @@ class PersonalizedSendThread(QThread):
             "attachments_failed": 0,
             "debug_mode": self.debug_mode,
             "targets": [],
+            "interrupted_target": "",
+            "interrupted_index": 0,
         }
 
         sender: WeChatSenderService | None = None
@@ -161,6 +164,7 @@ class PersonalizedSendThread(QThread):
                         total=total,
                     )
                     stopped_after_target = bool(row_result.pop("_stop_requested", False))
+                    abort_remaining = bool(row_result.pop("_abort_remaining", False))
                     summary["targets"].append(row_result)
                     summary["attachments_sent"] += int(row_result.get("attachment_sent_count", 0))
                     summary["attachments_failed"] += int(row_result.get("attachment_failed_count", 0))
@@ -175,6 +179,14 @@ class PersonalizedSendThread(QThread):
 
                     self.progress.emit(index, total, str(row_result.get("target_value") or ""))
                     self._safe_target_result_callback(row_result)
+
+                    if abort_remaining:
+                        summary["stopped"] = True
+                        summary["stopped_by_error"] = True
+                        summary["interrupted_target"] = str(row_result.get("target_value") or "")
+                        summary["interrupted_index"] = index
+                        self._emit_log(f"检测到发送异常，任务已在 {summary['interrupted_target'] or f'第{index}项'} 后立即停止。")
+                        break
 
                     if stopped_after_target:
                         summary["stopped"] = True
@@ -404,6 +416,8 @@ class PersonalizedSendThread(QThread):
                 row_result["error_msg"] = desired_debug_message
         if self._stop_requested:
             row_result["_stop_requested"] = True
+        elif row_result["send_status"] in {SEND_STATUS_FAILED, SEND_STATUS_PARTIAL_SUCCESS}:
+            row_result["_abort_remaining"] = True
 
         status_text = self._build_target_status_text(row_result)
         self._emit_log(f"[{index}/{total}] {status_text}：{target_value}", row_result)

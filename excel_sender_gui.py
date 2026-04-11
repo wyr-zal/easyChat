@@ -3,7 +3,7 @@ import os
 import sys
 import re
 import inspect
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -14,7 +14,10 @@ from PyQt5.QtWidgets import (
     QApplication,
     QButtonGroup,
     QCheckBox,
+    QComboBox,
     QDateTimeEdit,
+    QDialog,
+    QDialogButtonBox,
     QFileDialog,
     QFrame,
     QGridLayout,
@@ -27,7 +30,9 @@ from PyQt5.QtWidgets import (
     QPlainTextEdit,
     QPushButton,
     QRadioButton,
+    QSizePolicy,
     QSpinBox,
+    QSplitter,
     QTabWidget,
     QTableWidget,
     QTableWidgetItem,
@@ -54,6 +59,10 @@ from local_contact_store import (
     SCHEDULE_STATUS_CANCELLED,
     SCHEDULE_STATUS_COMPLETED,
     SCHEDULE_STATUS_FAILED,
+    SCHEDULE_MODE_CRON,
+    SCHEDULE_MODE_DAILY,
+    SCHEDULE_MODE_ONCE,
+    SCHEDULE_MODE_WEEKLY,
     SCHEDULE_STATUS_PENDING,
     SCHEDULE_STATUS_RUNNING,
     ScheduledSendJob,
@@ -86,10 +95,10 @@ SOURCE_MODE_JSON = "json"
 DEFAULT_LOCAL_FILTER_FIELDS = ("显示名称", "备注", "昵称", "标签", "详细描述")
 LOCAL_DB_HEADER_TITLE = "微信搜索关键词"
 JSON_HEADER_TITLE = "发送对象"
-ALLOWED_ATTACHMENT_SUFFIXES = (".pdf", ".jpg", ".jpeg", ".png", ".bmp", ".webp")
 JSON_TIME_FORMAT = "%Y-%m-%d %H:%M:%S"
 PRIMARY_UI_FONT_SIZE = 12
 HELPER_UI_FONT_SIZE = 11
+TERMINAL_SEND_STATUSES = {"success", "failed", "partial_success", "skipped"}
 
 
 class ExcelSenderGUI(QWidget):
@@ -124,6 +133,8 @@ class ExcelSenderGUI(QWidget):
         self.current_runtime_records: list[dict[str, Any]] = []
         self.current_runtime_source_json_path = ""
         self.current_runtime_log_path = ""
+        self.last_runtime_summary: dict[str, Any] = {}
+        self._compact_ui_mode = False
         self._startup_layout_refreshed = False
         self._updating_preview_table = False
         self._is_restoring_state = False
@@ -212,6 +223,12 @@ class ExcelSenderGUI(QWidget):
         if "debug_mode_enabled" not in bulk_send_config:
             bulk_send_config["debug_mode_enabled"] = False
             changed = True
+        if "schedule_mode" not in bulk_send_config:
+            bulk_send_config["schedule_mode"] = SCHEDULE_MODE_ONCE
+            changed = True
+        if "schedule_value" not in bulk_send_config:
+            bulk_send_config["schedule_value"] = ""
+            changed = True
 
         json_task_config = config.setdefault("json_tasks", {})
         if "last_import_dir" not in json_task_config:
@@ -248,7 +265,7 @@ class ExcelSenderGUI(QWidget):
     def init_ui(self) -> None:
         self.setWindowTitle("EasyChat Excel 个性化群发")
         self.resize(1344, 860)
-        self.setMinimumSize(1152, 720)
+        self.setMinimumSize(980, 660)
         self.apply_font_scaling()
 
         root_layout = QVBoxLayout(self)
@@ -266,6 +283,7 @@ class ExcelSenderGUI(QWidget):
         self.main_tabs.addTab(self.execution_page, "发送执行")
 
         root_layout.addWidget(self.main_tabs)
+        self.update_compact_ui_mode()
 
     def apply_font_scaling(self) -> None:
         base_font = QFont(self.font())
@@ -362,7 +380,7 @@ class ExcelSenderGUI(QWidget):
 
     def style_status_badge(self, label: QLabel) -> QLabel:
         label.setAlignment(Qt.AlignCenter)
-        label.setMinimumWidth(168)
+        label.setMinimumWidth(120)
         label.setMinimumHeight(40)
         label.setFont(self.build_helper_font())
         label.setStyleSheet(
@@ -380,6 +398,7 @@ class ExcelSenderGUI(QWidget):
             button.setMinimumWidth(min_width)
         if min_height > 0:
             button.setMinimumHeight(min_height)
+        button.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         button.style().unpolish(button)
         button.style().polish(button)
         button.update()
@@ -398,13 +417,43 @@ class ExcelSenderGUI(QWidget):
     def update_debug_mode_button_text(self) -> None:
         if not hasattr(self, "debug_mode_button"):
             return
-        self.debug_mode_button.setText("调试模式：开" if self.debug_mode_button.isChecked() else "调试模式：关")
+        if self._compact_ui_mode:
+            self.debug_mode_button.setText("调试：开" if self.debug_mode_button.isChecked() else "调试：关")
+        else:
+            self.debug_mode_button.setText("调试模式：开" if self.debug_mode_button.isChecked() else "调试模式：关")
         self.debug_mode_button.setToolTip("开启后会自动定位联系人并预填消息草稿，但不会按回车发送；附件与自动汇报也不会真实发送。")
 
     def on_debug_mode_toggled(self, checked: bool) -> None:
         self.config["bulk_send"]["debug_mode_enabled"] = bool(checked)
         self.update_debug_mode_button_text()
         self.save_config_if_ready()
+
+    def update_compact_ui_mode(self) -> None:
+        compact = self.width() < 1180
+        self._compact_ui_mode = compact
+        if hasattr(self, "preview_button"):
+            self.preview_button.setText("刷新计划" if compact else "刷新发送计划")
+        if hasattr(self, "import_json_button"):
+            self.import_json_button.setText("导入 JSON" if compact else "导入 JSON（多选）")
+        if hasattr(self, "export_json_button"):
+            self.export_json_button.setText("导出 JSON")
+        if hasattr(self, "continue_button"):
+            self.continue_button.setText("继续" if compact else "继续发送")
+        if hasattr(self, "stop_button"):
+            self.stop_button.setText("停止")
+        if hasattr(self, "refresh_schedule_button"):
+            self.refresh_schedule_button.setText("刷新列表" if compact else "刷新任务列表")
+        if hasattr(self, "preview_schedule_button"):
+            self.preview_schedule_button.setText("预览任务" if compact else "预览选中任务")
+        if hasattr(self, "delete_schedule_button"):
+            self.delete_schedule_button.setText("删除队列" if compact else "删除队列记录")
+        if hasattr(self, "cancel_schedule_button"):
+            self.cancel_schedule_button.setText("取消任务" if compact else "取消选中任务")
+        if hasattr(self, "send_status_label"):
+            self.send_status_label.setMinimumWidth(88 if compact else 120)
+        self.update_debug_mode_button_text()
+        if hasattr(self, "start_button"):
+            self.update_action_button_state()
 
     def build_settings_group(self) -> QGroupBox:
         group = QGroupBox("基础设置")
@@ -445,13 +494,20 @@ class ExcelSenderGUI(QWidget):
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(12)
         layout.addWidget(self.build_control_group())
-        middle_row = QHBoxLayout()
-        middle_row.setSpacing(12)
-        middle_row.addWidget(self.build_execution_settings_group(), stretch=5)
-        middle_row.addWidget(self.build_schedule_group(), stretch=7)
-        layout.addLayout(middle_row, stretch=2)
-        layout.addWidget(self.build_preview_group(), stretch=3)
-        layout.addWidget(self.build_log_group(), stretch=2)
+
+        middle_splitter = QSplitter(Qt.Horizontal, page)
+        middle_splitter.addWidget(self.build_execution_settings_group())
+        middle_splitter.addWidget(self.build_schedule_group())
+        middle_splitter.setStretchFactor(0, 5)
+        middle_splitter.setStretchFactor(1, 7)
+        layout.addWidget(middle_splitter, stretch=3)
+
+        bottom_splitter = QSplitter(Qt.Vertical, page)
+        bottom_splitter.addWidget(self.build_preview_group())
+        bottom_splitter.addWidget(self.build_log_group())
+        bottom_splitter.setStretchFactor(0, 3)
+        bottom_splitter.setStretchFactor(1, 2)
+        layout.addWidget(bottom_splitter, stretch=4)
         return page
 
     def build_control_group(self) -> QGroupBox:
@@ -508,7 +564,7 @@ class ExcelSenderGUI(QWidget):
         mode_layout.addStretch(1)
         layout.addLayout(mode_layout)
 
-        schedule_tip_label = QLabel("普通定时任务使用这里的计划时间；JSON 任务会按各自的 `start_time` 自动执行。")
+        schedule_tip_label = QLabel("普通定时任务使用这里的计划时间；如设置周期，会在本次成功后按规则自动排下一次。JSON 任务也可携带自己的周期规则。")
         self.style_helper_label(schedule_tip_label, color="#555")
         layout.addWidget(schedule_tip_label)
 
@@ -522,6 +578,27 @@ class ExcelSenderGUI(QWidget):
         plan_time_layout.addWidget(self.scheduled_time_edit)
         plan_time_layout.addStretch(1)
         layout.addLayout(plan_time_layout)
+
+        recurrence_layout = QGridLayout()
+        recurrence_layout.setHorizontalSpacing(10)
+        recurrence_layout.setVerticalSpacing(8)
+        recurrence_layout.addWidget(QLabel("重复频率"), 0, 0)
+        self.schedule_mode_combo = QComboBox(self)
+        self.schedule_mode_combo.addItem("一次性", SCHEDULE_MODE_ONCE)
+        self.schedule_mode_combo.addItem("每天", SCHEDULE_MODE_DAILY)
+        self.schedule_mode_combo.addItem("每周", SCHEDULE_MODE_WEEKLY)
+        self.schedule_mode_combo.addItem("Cron 自定义", SCHEDULE_MODE_CRON)
+        self.schedule_mode_combo.currentIndexChanged.connect(self.on_schedule_mode_changed)
+        recurrence_layout.addWidget(self.schedule_mode_combo, 0, 1)
+        recurrence_layout.addWidget(QLabel("规则值"), 1, 0)
+        self.schedule_value_input = QLineEdit(self)
+        self.schedule_value_input.setPlaceholderText("Cron 示例：0 9 * * 1-5")
+        self.schedule_value_input.textChanged.connect(self.on_bulk_send_option_changed)
+        recurrence_layout.addWidget(self.schedule_value_input, 1, 1)
+        self.schedule_mode_hint_label = QLabel("一次性任务不会自动生成下一次执行。")
+        self.style_helper_label(self.schedule_mode_hint_label, color="#555")
+        recurrence_layout.addWidget(self.schedule_mode_hint_label, 2, 0, 1, 2)
+        layout.addLayout(recurrence_layout)
 
         layout.addWidget(self.build_separator())
 
@@ -586,21 +663,34 @@ class ExcelSenderGUI(QWidget):
         layout = QVBoxLayout(group)
         layout.setSpacing(10)
 
-        helper_label = QLabel("这里汇总普通定时任务和 JSON 任务。JSON 任务到 `start_time` 会自动执行，也支持手动提前开始。")
+        helper_label = QLabel("这里汇总普通定时任务和 JSON 任务，可查看计划、删除调度记录，失败后也可继续发送剩余未发送项。")
         self.style_helper_label(helper_label, color="#555")
         layout.addWidget(helper_label)
 
-        task_action_layout = QHBoxLayout()
+        task_action_layout = QGridLayout()
+        task_action_layout.setHorizontalSpacing(10)
+        task_action_layout.setVerticalSpacing(8)
         self.refresh_schedule_button = QPushButton("刷新任务列表")
         self.refresh_schedule_button.clicked.connect(self.refresh_scheduled_jobs)
-        self.set_button_role(self.refresh_schedule_button, "secondary", min_width=140)
+        self.set_button_role(self.refresh_schedule_button, "secondary", min_width=110)
+        self.preview_schedule_button = QPushButton("预览选中任务")
+        self.preview_schedule_button.clicked.connect(self.preview_selected_scheduled_job)
+        self.set_button_role(self.preview_schedule_button, "secondary", min_width=110)
+        self.preview_schedule_button.setEnabled(False)
+        self.delete_schedule_button = QPushButton("删除队列记录")
+        self.delete_schedule_button.clicked.connect(self.delete_selected_scheduled_job)
+        self.set_button_role(self.delete_schedule_button, "danger", min_width=110)
+        self.delete_schedule_button.setEnabled(False)
         self.cancel_schedule_button = QPushButton("取消选中任务")
         self.cancel_schedule_button.clicked.connect(self.cancel_selected_scheduled_job)
-        self.set_button_role(self.cancel_schedule_button, "secondary", min_width=140)
+        self.set_button_role(self.cancel_schedule_button, "secondary", min_width=110)
         self.cancel_schedule_button.setEnabled(False)
-        task_action_layout.addWidget(self.refresh_schedule_button)
-        task_action_layout.addWidget(self.cancel_schedule_button)
-        task_action_layout.addStretch(1)
+        task_action_layout.addWidget(self.refresh_schedule_button, 0, 0)
+        task_action_layout.addWidget(self.preview_schedule_button, 0, 1)
+        task_action_layout.addWidget(self.delete_schedule_button, 1, 0)
+        task_action_layout.addWidget(self.cancel_schedule_button, 1, 1)
+        task_action_layout.setColumnStretch(0, 1)
+        task_action_layout.setColumnStretch(1, 1)
         layout.addLayout(task_action_layout)
 
         self.schedule_table = QTableWidget(0, 6, self)
@@ -765,14 +855,13 @@ class ExcelSenderGUI(QWidget):
         self.style_helper_label(self.placeholder_status_label)
         layout.addWidget(self.placeholder_status_label)
 
-        attachment_title = QLabel("通用附件（PDF/图片）")
+        attachment_title = QLabel("通用附件（任意本地文件）")
         attachment_title.setStyleSheet("font-weight: 600;")
         layout.addWidget(attachment_title)
 
         attachment_path_layout = QHBoxLayout()
         self.common_attachment_input = FileDropLineEdit(
             allow_multiple=True,
-            suffixes=list(ALLOWED_ATTACHMENT_SUFFIXES),
             parent=self,
         )
         self.common_attachment_input.setPlaceholderText("拖入附件或输入路径（多文件用分号分隔）")
@@ -870,49 +959,53 @@ class ExcelSenderGUI(QWidget):
         layout = QVBoxLayout()
         layout.setSpacing(8)
 
-        primary_row = QHBoxLayout()
-        primary_row.setSpacing(12)
-        secondary_row = QHBoxLayout()
-        secondary_row.setSpacing(12)
+        action_grid = QGridLayout()
+        action_grid.setHorizontalSpacing(10)
+        action_grid.setVerticalSpacing(8)
 
         self.preview_button = QPushButton("刷新发送计划")
         self.preview_button.clicked.connect(self.show_preview_results)
-        self.set_button_role(self.preview_button, "secondary", min_width=150, min_height=40)
+        self.set_button_role(self.preview_button, "secondary", min_width=108, min_height=40)
 
         self.start_button = QPushButton("立即开始发送")
         self.start_button.clicked.connect(self.start_sending)
-        self.set_button_role(self.start_button, "primary", min_width=180, min_height=42)
+        self.set_button_role(self.start_button, "primary", min_width=126, min_height=42)
 
         self.stop_button = QPushButton("停止发送")
         self.stop_button.setEnabled(False)
         self.stop_button.clicked.connect(self.stop_sending)
-        self.set_button_role(self.stop_button, "danger", min_width=120, min_height=42)
+        self.set_button_role(self.stop_button, "danger", min_width=96, min_height=42)
+
+        self.continue_button = QPushButton("继续发送")
+        self.continue_button.setEnabled(False)
+        self.continue_button.clicked.connect(self.continue_sending)
+        self.set_button_role(self.continue_button, "secondary", min_width=96, min_height=42)
 
         self.export_json_button = QPushButton("导出 JSON")
         self.export_json_button.clicked.connect(self.export_current_plan_to_json)
-        self.set_button_role(self.export_json_button, "secondary", min_width=132, min_height=38)
+        self.set_button_role(self.export_json_button, "secondary", min_width=96, min_height=38)
 
         self.import_json_button = QPushButton("导入 JSON（多选）")
         self.import_json_button.clicked.connect(self.import_json_tasks)
-        self.set_button_role(self.import_json_button, "secondary", min_width=160, min_height=38)
+        self.set_button_role(self.import_json_button, "secondary", min_width=108, min_height=38)
 
         self.debug_mode_button = QPushButton("调试模式：关")
         self.debug_mode_button.setCheckable(True)
         self.debug_mode_button.toggled.connect(self.on_debug_mode_toggled)
-        self.set_button_role(self.debug_mode_button, "neutral", min_width=148, min_height=38)
+        self.set_button_role(self.debug_mode_button, "neutral", min_width=108, min_height=38)
 
-        primary_row.addWidget(self.start_button)
-        primary_row.addWidget(self.stop_button)
-        primary_row.addWidget(self.preview_button)
-        primary_row.addStretch(1)
+        action_grid.addWidget(self.start_button, 0, 0)
+        action_grid.addWidget(self.stop_button, 0, 1)
+        action_grid.addWidget(self.continue_button, 0, 2)
+        action_grid.addWidget(self.preview_button, 1, 0)
+        action_grid.addWidget(self.import_json_button, 1, 1)
+        action_grid.addWidget(self.export_json_button, 1, 2)
+        action_grid.addWidget(self.debug_mode_button, 2, 0, 1, 3)
+        action_grid.setColumnStretch(0, 1)
+        action_grid.setColumnStretch(1, 1)
+        action_grid.setColumnStretch(2, 1)
 
-        secondary_row.addWidget(self.import_json_button)
-        secondary_row.addWidget(self.export_json_button)
-        secondary_row.addWidget(self.debug_mode_button)
-        secondary_row.addStretch(1)
-
-        layout.addLayout(primary_row)
-        layout.addLayout(secondary_row)
+        layout.addLayout(action_grid)
         return layout
 
     def build_preview_group(self) -> QGroupBox:
@@ -996,12 +1089,18 @@ class ExcelSenderGUI(QWidget):
             self.report_to_input.setText(str(bulk_send["report_to"]))
             self.auto_report_checkbox.setChecked(bool(bulk_send["auto_report_enabled"]))
             self.debug_mode_button.setChecked(bool(bulk_send.get("debug_mode_enabled")))
+            schedule_mode = str(bulk_send.get("schedule_mode") or SCHEDULE_MODE_ONCE)
+            schedule_value = str(bulk_send.get("schedule_value") or "")
+            schedule_index = self.schedule_mode_combo.findData(schedule_mode)
+            self.schedule_mode_combo.setCurrentIndex(max(schedule_index, 0))
+            self.schedule_value_input.setText(schedule_value)
             self.update_debug_mode_button_text()
             if bulk_send.get("send_mode") == "scheduled":
                 self.scheduled_mode_radio.setChecked(True)
             else:
                 self.immediate_mode_radio.setChecked(True)
             self.on_send_mode_changed()
+            self.on_schedule_mode_changed()
 
             language = self.config["settings"]["language"]
             if hasattr(self, "lang_zh_tw") and hasattr(self, "lang_en") and hasattr(self, "lang_zh_cn"):
@@ -1181,15 +1280,178 @@ class ExcelSenderGUI(QWidget):
         )
 
         if selected_json_pending:
-            self.start_button.setText("立即开始所选任务")
+            self.start_button.setText("开始所选任务" if self._compact_ui_mode else "立即开始所选任务")
         elif hasattr(self, "scheduled_mode_radio") and self.scheduled_mode_radio.isChecked():
-            self.start_button.setText("创建普通定时任务")
+            self.start_button.setText("创建定时任务" if self._compact_ui_mode else "创建普通定时任务")
         else:
-            self.start_button.setText("立即开始发送")
+            self.start_button.setText("开始发送" if self._compact_ui_mode else "立即开始发送")
 
         if hasattr(self, "cancel_schedule_button"):
             can_cancel = bool(selected_job is not None and selected_job.status == SCHEDULE_STATUS_PENDING)
             self.cancel_schedule_button.setEnabled(can_cancel)
+        if hasattr(self, "preview_schedule_button"):
+            self.preview_schedule_button.setEnabled(selected_job is not None)
+        if hasattr(self, "delete_schedule_button"):
+            can_delete = bool(selected_job is not None and selected_job.status != SCHEDULE_STATUS_RUNNING)
+            self.delete_schedule_button.setEnabled(can_delete)
+        if hasattr(self, "continue_button"):
+            self.continue_button.setEnabled(self.get_resume_context() is not None)
+
+    def get_schedule_mode_text(self, schedule_mode: str, schedule_value: str = "") -> str:
+        normalized_mode = str(schedule_mode or SCHEDULE_MODE_ONCE).strip().lower()
+        if normalized_mode == SCHEDULE_MODE_DAILY:
+            return "每天"
+        if normalized_mode == SCHEDULE_MODE_WEEKLY:
+            return "每周"
+        if normalized_mode == SCHEDULE_MODE_CRON:
+            return f"Cron（{schedule_value or '未设置'}）"
+        return "一次性"
+
+    def get_schedule_config_for_queue(self) -> tuple[str, str, str | None]:
+        schedule_mode = self.get_selected_schedule_mode()
+        schedule_value = self.schedule_value_input.text().strip() if hasattr(self, "schedule_value_input") else ""
+        if schedule_mode == SCHEDULE_MODE_CRON:
+            if schedule_value == "":
+                return schedule_mode, schedule_value, "请填写 Cron 表达式。"
+            try:
+                next_run = self.compute_next_run_from_cron(datetime.now(), schedule_value)
+            except ValueError as exc:
+                return schedule_mode, schedule_value, str(exc)
+            if next_run is None:
+                return schedule_mode, schedule_value, "Cron 表达式在未来一年内没有可执行时间。"
+        return schedule_mode, schedule_value, None
+
+    def parse_cron_field(self, field_text: str, min_value: int, max_value: int, *, allow_seven_as_zero: bool = False) -> set[int]:
+        normalized = str(field_text or "").strip()
+        if normalized == "":
+            raise ValueError("Cron 表达式字段不能为空。")
+
+        values: set[int] = set()
+        for part in normalized.split(","):
+            segment = part.strip()
+            if segment == "":
+                raise ValueError("Cron 表达式字段存在空片段。")
+            if "/" in segment:
+                base_text, step_text = segment.split("/", 1)
+                try:
+                    step = int(step_text)
+                except ValueError as exc:
+                    raise ValueError(f"Cron 步长无效：{segment}") from exc
+                if step <= 0:
+                    raise ValueError(f"Cron 步长必须大于 0：{segment}")
+            else:
+                base_text = segment
+                step = 1
+
+            if base_text in {"", "*"}:
+                start_value, end_value = min_value, max_value
+            elif "-" in base_text:
+                start_text, end_text = base_text.split("-", 1)
+                start_value = int(start_text)
+                end_value = int(end_text)
+            else:
+                start_value = int(base_text)
+                end_value = start_value
+
+            if allow_seven_as_zero:
+                if start_value == 7:
+                    start_value = 0
+                if end_value == 7:
+                    end_value = 0
+
+            if start_value > end_value and not allow_seven_as_zero:
+                raise ValueError(f"Cron 范围无效：{segment}")
+            if start_value < min_value or end_value > max_value:
+                raise ValueError(f"Cron 范围超出限制：{segment}")
+
+            current = start_value
+            while current <= end_value:
+                values.add(0 if allow_seven_as_zero and current == 7 else current)
+                current += step
+
+        return values
+
+    def cron_matches_datetime(self, dt: datetime, expression: str) -> bool:
+        parts = [part.strip() for part in str(expression or "").split() if part.strip()]
+        if len(parts) != 5:
+            raise ValueError("Cron 表达式必须是 5 段：分 时 日 月 周。")
+        minute_values = self.parse_cron_field(parts[0], 0, 59)
+        hour_values = self.parse_cron_field(parts[1], 0, 23)
+        day_values = self.parse_cron_field(parts[2], 1, 31)
+        month_values = self.parse_cron_field(parts[3], 1, 12)
+        weekday_values = self.parse_cron_field(parts[4], 0, 7, allow_seven_as_zero=True)
+        cron_weekday = (dt.weekday() + 1) % 7
+        return (
+            dt.minute in minute_values
+            and dt.hour in hour_values
+            and dt.day in day_values
+            and dt.month in month_values
+            and cron_weekday in weekday_values
+        )
+
+    def compute_next_run_from_cron(self, base_time: datetime, expression: str) -> datetime | None:
+        candidate = base_time.replace(second=0, microsecond=0) + timedelta(minutes=1)
+        for _ in range(366 * 24 * 60):
+            if self.cron_matches_datetime(candidate, expression):
+                return candidate
+            candidate += timedelta(minutes=1)
+        return None
+
+    def compute_next_run_time(self, job: ScheduledSendJob, finished_at_text: str) -> str | None:
+        schedule_mode = str(job.schedule_mode or SCHEDULE_MODE_ONCE).strip().lower()
+        if schedule_mode == SCHEDULE_MODE_ONCE:
+            return None
+        base_dt = datetime.strptime(
+            finished_at_text or datetime.now().strftime(JSON_TIME_FORMAT),
+            JSON_TIME_FORMAT,
+        )
+        current_schedule = datetime.strptime(job.scheduled_at, JSON_TIME_FORMAT)
+        if schedule_mode == SCHEDULE_MODE_DAILY:
+            next_dt = current_schedule + timedelta(days=1)
+            while next_dt <= base_dt:
+                next_dt += timedelta(days=1)
+            return next_dt.strftime(JSON_TIME_FORMAT)
+        if schedule_mode == SCHEDULE_MODE_WEEKLY:
+            next_dt = current_schedule + timedelta(days=7)
+            while next_dt <= base_dt:
+                next_dt += timedelta(days=7)
+            return next_dt.strftime(JSON_TIME_FORMAT)
+        if schedule_mode == SCHEDULE_MODE_CRON:
+            next_dt = self.compute_next_run_from_cron(base_dt, str(job.schedule_value or ""))
+            if next_dt is None:
+                return None
+            return next_dt.strftime(JSON_TIME_FORMAT)
+        return None
+
+    def get_resume_context(self) -> tuple[int, ScheduledSendJob | None, list[dict[str, Any]], str] | None:
+        selected_job = self.get_selected_scheduled_job() if hasattr(self, "schedule_table") else None
+        if selected_job is not None and selected_job.status in {SCHEDULE_STATUS_FAILED, SCHEDULE_STATUS_CANCELLED}:
+            records = self.build_resume_records(selected_job.task_id)
+            if records:
+                return selected_job.task_id, selected_job, records, f"定时任务 {selected_job.job_id}"
+        if self.current_task_id is not None:
+            records = self.build_resume_records(self.current_task_id)
+            if records:
+                return self.current_task_id, None, records, f"任务快照 {self.current_task_id}"
+        return None
+
+    def build_resume_records(self, task_id: int) -> list[dict[str, Any]]:
+        records = self.local_store.load_task_records(task_id)
+        if not records:
+            return []
+        last_terminal_index = -1
+        for index, row in enumerate(records):
+            send_status = str(row.get("send_status") or "").strip().lower()
+            if send_status in TERMINAL_SEND_STATUSES:
+                last_terminal_index = index
+        if last_terminal_index < 0 or last_terminal_index >= len(records) - 1:
+            return []
+        remaining: list[dict[str, Any]] = []
+        for row in records[last_terminal_index + 1 :]:
+            send_status = str(row.get("send_status") or "").strip().lower()
+            if send_status not in TERMINAL_SEND_STATUSES:
+                remaining.append(dict(row))
+        return remaining
 
     def ensure_local_filter_defaults(self) -> None:
         current_fields = [field.strip() for field in self.filter_fields_input.text().split(",") if field.strip()]
@@ -1300,7 +1562,33 @@ class ExcelSenderGUI(QWidget):
         self.config["bulk_send"]["report_to"] = self.report_to_input.text().strip() or DEFAULT_REPORT_TARGET
         self.config["bulk_send"]["auto_report_enabled"] = self.auto_report_checkbox.isChecked()
         self.config["bulk_send"]["debug_mode_enabled"] = self.is_debug_mode_enabled()
+        self.config["bulk_send"]["schedule_mode"] = self.get_selected_schedule_mode()
+        self.config["bulk_send"]["schedule_value"] = self.schedule_value_input.text().strip() if hasattr(self, "schedule_value_input") else ""
         self.save_config_if_ready()
+
+    def get_selected_schedule_mode(self) -> str:
+        if not hasattr(self, "schedule_mode_combo"):
+            return SCHEDULE_MODE_ONCE
+        return str(self.schedule_mode_combo.currentData() or SCHEDULE_MODE_ONCE)
+
+    def on_schedule_mode_changed(self, *_args) -> None:
+        mode = self.get_selected_schedule_mode()
+        if mode == SCHEDULE_MODE_ONCE:
+            hint = "一次性任务不会自动生成下一次执行。"
+        elif mode == SCHEDULE_MODE_DAILY:
+            hint = "每天：本次成功后按相同时间顺延 1 天。"
+        elif mode == SCHEDULE_MODE_WEEKLY:
+            hint = "每周：本次成功后按相同时间顺延 7 天。"
+        else:
+            hint = "Cron：使用 5 段表达式（分 时 日 月 周），例如 `0 9 * * 1-5`。"
+        if hasattr(self, "schedule_mode_hint_label"):
+            self.schedule_mode_hint_label.setText(hint)
+        if hasattr(self, "schedule_value_input"):
+            self.schedule_value_input.setEnabled(mode == SCHEDULE_MODE_CRON)
+            if mode != SCHEDULE_MODE_CRON and self.schedule_value_input.text().strip():
+                self.schedule_value_input.clear()
+        self.on_bulk_send_option_changed()
+        self.update_action_button_state()
 
     def normalize_attachment_items(self, raw_items: Any) -> list[dict[str, str]]:
         if json_task_helper is not None:
@@ -1336,8 +1624,6 @@ class ExcelSenderGUI(QWidget):
             if not Path(resolved_path).exists():
                 raise ValueError(f"附件不存在：{resolved_path}")
             file_type = file_type or self.infer_attachment_type(resolved_path)
-            if file_type == "":
-                raise ValueError(f"附件类型不合法：{resolved_path}")
             normalized.append(
                 {
                     "file_path": resolved_path,
@@ -1352,7 +1638,7 @@ class ExcelSenderGUI(QWidget):
             return "pdf"
         if suffix in {".jpg", ".jpeg", ".png", ".bmp", ".webp"}:
             return "image"
-        return ""
+        return "file"
 
     def refresh_common_attachment_table(self) -> None:
         if not hasattr(self, "common_attachment_table"):
@@ -1379,7 +1665,7 @@ class ExcelSenderGUI(QWidget):
             self,
             "选择通用附件",
             start_dir,
-            "附件文件(*.pdf *.jpg *.jpeg *.png *.bmp *.webp)",
+            "所有文件(*.*)",
         )
         if not paths:
             return
@@ -1442,6 +1728,12 @@ class ExcelSenderGUI(QWidget):
             visible_names.append(f"... 还有 {len(names) - max_items} 个")
         return "；".join(visible_names)
 
+    def resolve_row_attachments_for_preview(self, row: dict[str, Any]) -> tuple[list[dict[str, str]], str]:
+        custom_attachments = self.extract_row_custom_attachments(row)
+        if custom_attachments:
+            return custom_attachments, "custom"
+        return [dict(item) for item in self.common_attachments], "common"
+
     def get_row_attachment_button_text(self, row: dict[str, Any]) -> str:
         custom_attachments = self.extract_row_custom_attachments(row)
         if custom_attachments:
@@ -1449,11 +1741,11 @@ class ExcelSenderGUI(QWidget):
         return "附件"
 
     def get_row_attachment_tooltip(self, row: dict[str, Any]) -> str:
-        custom_attachments = self.extract_row_custom_attachments(row)
-        if custom_attachments:
-            return "当前使用自定义附件：\n" + self.build_attachment_summary_text(custom_attachments, max_items=5)
-        if self.common_attachments:
-            return "当前使用通用附件：\n" + self.build_attachment_summary_text(self.common_attachments, max_items=5)
+        attachments, attachment_mode = self.resolve_row_attachments_for_preview(row)
+        if attachment_mode == "custom":
+            return "当前使用自定义附件：\n" + self.build_attachment_summary_text(attachments, max_items=5)
+        if attachments:
+            return "当前使用通用附件：\n" + self.build_attachment_summary_text(attachments, max_items=5)
         return "当前未设置附件。"
 
     def set_row_custom_attachments(self, row_index: int, attachments: list[dict[str, str]] | None) -> None:
@@ -1556,9 +1848,13 @@ class ExcelSenderGUI(QWidget):
 
     def build_json_task_payload(self, records: list[dict[str, Any]]) -> dict[str, Any]:
         targets = [self.build_target_payload(row, index=index) for index, row in enumerate(records)]
+        schedule_mode = self.get_selected_schedule_mode()
+        schedule_value = self.schedule_value_input.text().strip() if hasattr(self, "schedule_value_input") else ""
         return {
             "start_time": self.choose_json_start_time_text(),
             "end_time": "",
+            "schedule_mode": schedule_mode,
+            "schedule_value": schedule_value,
             "total_count": len(targets),
             "template_content": self.template_input.toPlainText(),
             "common_attachments": [dict(item) for item in self.common_attachments],
@@ -1571,6 +1867,10 @@ class ExcelSenderGUI(QWidget):
             QMessageBox.warning(self, "无法导出 JSON", error_message)
             return
         assert records is not None
+        _schedule_mode, _schedule_value, schedule_error = self.get_schedule_config_for_queue()
+        if schedule_error is not None:
+            QMessageBox.warning(self, "无法导出 JSON", schedule_error)
+            return
         try:
             payload = self.build_json_task_payload(records)
         except Exception as exc:
@@ -1723,17 +2023,22 @@ class ExcelSenderGUI(QWidget):
         self.scheduled_time_edit.setEnabled(is_scheduled)
         self.config["bulk_send"]["send_mode"] = "scheduled" if is_scheduled else "immediate"
         self.save_config_if_ready()
+        recurrence_text = self.get_schedule_mode_text(
+            self.get_selected_schedule_mode(),
+            self.schedule_value_input.text().strip() if hasattr(self, "schedule_value_input") else "",
+        )
         if is_scheduled:
             self.schedule_status_label.setStyleSheet("color:#b54708;")
             self.schedule_status_label.setText(
-                f"当前为定时发送模式，计划时间：{self.scheduled_time_edit.dateTime().toString('yyyy-MM-dd HH:mm')}。"
+                f"当前为定时发送模式，计划时间：{self.scheduled_time_edit.dateTime().toString('yyyy-MM-dd HH:mm')}，频率：{recurrence_text}。"
             )
         else:
             self.schedule_status_label.setStyleSheet("color:#555;")
-            self.schedule_status_label.setText("当前为立即发送模式。")
+            self.schedule_status_label.setText(f"当前为立即发送模式（导出/建队列时默认频率：{recurrence_text}）。")
         self.update_action_button_state()
 
     def refresh_scheduled_jobs(self) -> None:
+        previous_job = self.get_selected_scheduled_job() if self.schedule_table.rowCount() > 0 else None
         jobs = self.local_store.list_scheduled_jobs()
         self.json_job_source_paths = {}
         self.schedule_table.setRowCount(len(jobs))
@@ -1758,11 +2063,16 @@ class ExcelSenderGUI(QWidget):
             self.schedule_table.setItem(row_index, 4, source_item)
 
             preview_text = job.template_preview or ""
+            recurrence_text = self.get_schedule_mode_text(job.schedule_mode, job.schedule_value)
+            if recurrence_text != "一次性":
+                preview_text = (preview_text + " | " if preview_text else "") + f"频率：{recurrence_text}"
             if job.wait_reason:
                 preview_text = (preview_text + " | " if preview_text else "") + job.wait_reason
             self.schedule_table.setItem(row_index, 5, QTableWidgetItem(preview_text))
 
         self.schedule_table.resizeRowsToContents()
+        if previous_job is not None:
+            self.select_scheduled_job(previous_job.job_id)
         self.update_action_button_state()
 
     def get_schedule_status_text(self, status: str) -> str:
@@ -1833,6 +2143,132 @@ class ExcelSenderGUI(QWidget):
             self.append_log(f"已取消定时任务：{', '.join(cancelled_ids)}")
         if skipped_ids:
             self.append_log(f"以下任务未取消（可能已开始或已结束）：{', '.join(skipped_ids)}")
+
+    def delete_selected_scheduled_job(self) -> None:
+        selected_job = self.get_selected_scheduled_job()
+        if selected_job is None:
+            QMessageBox.information(self, "未选择任务", "请先选择要删除的队列任务。")
+            return
+        if selected_job.status == SCHEDULE_STATUS_RUNNING:
+            QMessageBox.information(self, "无法删除", "正在执行中的任务不能删除，请等待结束或先停止。")
+            return
+        reply = QMessageBox.question(
+            self,
+            "确认删除队列记录",
+            (
+                f"将删除队列任务 {selected_job.job_id}。\n"
+                "仅删除调度记录，不会删除任务快照，也不会删除原始 JSON 文件。\n\n"
+                "确认继续吗？"
+            ),
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No,
+        )
+        if reply != QMessageBox.Yes:
+            return
+        if self.local_store.delete_scheduled_job(selected_job.job_id):
+            self.refresh_scheduled_jobs()
+            self.append_log(f"已删除队列任务 {selected_job.job_id}（仅调度记录）。")
+        else:
+            QMessageBox.warning(self, "删除失败", "删除队列记录失败，可能任务已开始执行。")
+
+    def preview_selected_scheduled_job(self) -> None:
+        selected_job = self.get_selected_scheduled_job()
+        if selected_job is None:
+            QMessageBox.information(self, "未选择任务", "请先选择要预览的队列任务。")
+            return
+        records = self.local_store.load_task_records(selected_job.task_id)
+        task_details = self.local_store.get_task_details(selected_job.task_id)
+        if not records:
+            QMessageBox.information(self, "无可预览内容", "当前任务快照为空。")
+            return
+        template_text = str(task_details.get("template_text") or "") if task_details is not None else ""
+        preview_common_attachments = (
+            self.normalize_attachment_items(task_details.get("common_attachments_json") or "[]")
+            if task_details is not None
+            else []
+        )
+        dialog = QDialog(self)
+        dialog.setWindowTitle(f"预览任务 {selected_job.job_id} 的发送计划")
+        dialog.resize(980, 560)
+        dialog.setMinimumSize(760, 420)
+        layout = QVBoxLayout(dialog)
+        summary_label = QLabel(
+            f"计划时间：{selected_job.scheduled_at} | 频率：{self.get_schedule_mode_text(selected_job.schedule_mode, selected_job.schedule_value)} | 人数：{selected_job.total_count}"
+        )
+        self.style_helper_label(summary_label, color="#555")
+        layout.addWidget(summary_label)
+        table = QTableWidget(len(records), 4, dialog)
+        table.setHorizontalHeaderLabels([JSON_HEADER_TITLE, "显示名称", "消息摘要", "附件摘要"])
+        table.verticalHeader().setVisible(False)
+        table.setSelectionBehavior(QAbstractItemView.SelectRows)
+        table.setEditTriggers(QAbstractItemView.NoEditTriggers)
+        table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeToContents)
+        table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeToContents)
+        table.horizontalHeader().setSectionResizeMode(2, QHeaderView.Stretch)
+        table.horizontalHeader().setSectionResizeMode(3, QHeaderView.ResizeToContents)
+        for row_index, row in enumerate(records):
+            table.setItem(row_index, 0, QTableWidgetItem(self.get_send_target_value(row)))
+            table.setItem(row_index, 1, QTableWidgetItem(self.get_display_name(row)))
+            if CUSTOM_MESSAGE_OVERRIDE_KEY in row:
+                preview_message = str(row.get(CUSTOM_MESSAGE_OVERRIDE_KEY, ""))
+            else:
+                preview_message = render_template(template_text, row) if template_text else str(row.get("message") or "")
+            table.setItem(row_index, 2, QTableWidgetItem(preview_message))
+            custom_attachments = self.extract_row_custom_attachments(row)
+            attachments = custom_attachments if custom_attachments else [dict(item) for item in preview_common_attachments]
+            table.setItem(row_index, 3, QTableWidgetItem(self.build_attachment_summary_text(attachments, max_items=4)))
+        table.resizeRowsToContents()
+        layout.addWidget(table, stretch=1)
+        button_box = QDialogButtonBox(QDialogButtonBox.Close, dialog)
+        button_box.rejected.connect(dialog.reject)
+        button_box.accepted.connect(dialog.accept)
+        layout.addWidget(button_box)
+        dialog.exec_()
+
+    def continue_sending(self) -> None:
+        if self.send_thread is not None and self.send_thread.isRunning():
+            QMessageBox.information(self, "发送中", "当前已有发送任务正在执行。")
+            return
+        resume_context = self.get_resume_context()
+        if resume_context is None:
+            QMessageBox.information(self, "无需继续", "当前没有可继续发送的未发送项。")
+            return
+        task_id, selected_job, records, source_label = resume_context
+        if not records:
+            QMessageBox.information(self, "无需继续", "当前任务没有剩余未发送项。")
+            return
+        task_details = self.local_store.get_task_details(task_id)
+        if task_details is None:
+            QMessageBox.warning(self, "无法继续", "任务快照不存在。")
+            return
+        reply = QMessageBox.question(
+            self,
+            "确认继续发送",
+            f"准备继续 {source_label}，剩余未发送 {len(records)} 项。\n失败项不会自动重试，确认继续吗？",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No,
+        )
+        if reply != QMessageBox.Yes:
+            return
+        self.current_task_id = task_id
+        self.records = self.local_store.load_task_records(task_id)
+        self.render_preview()
+        if selected_job is not None:
+            self.local_store.mark_scheduled_job_running(selected_job.job_id)
+            self.local_store.clear_job_waiting_conflict(selected_job.job_id)
+            self.refresh_scheduled_jobs()
+        self.launch_send_thread(
+            records=records,
+            template_text=str(task_details.get("template_text") or ""),
+            target_column=TARGET_VALUE_KEY,
+            interval_seconds=selected_job.interval_seconds if selected_job is not None else self.interval_spin.value(),
+            random_delay_min=selected_job.random_delay_min if selected_job is not None else self.random_delay_min_spin.value(),
+            random_delay_max=selected_job.random_delay_max if selected_job is not None else self.random_delay_max_spin.value(),
+            operator_name=selected_job.operator_name if selected_job is not None else self.operator_name_input.text().strip(),
+            report_to=(selected_job.report_to if selected_job is not None else self.report_to_input.text().strip()) or DEFAULT_REPORT_TARGET,
+            auto_report=selected_job is not None or self.auto_report_checkbox.isChecked(),
+            scheduled_job=selected_job,
+        )
 
     def poll_scheduled_jobs(self) -> None:
         due_jobs = self.local_store.get_due_scheduled_jobs(datetime.now().strftime("%Y-%m-%d %H:%M:%S"), limit=20)
@@ -2714,6 +3150,10 @@ class ExcelSenderGUI(QWidget):
         if scheduled_at <= QDateTime.currentDateTime():
             QMessageBox.warning(self, "计划时间无效", "定时发送时间必须晚于当前时间。")
             return
+        schedule_mode, schedule_value, schedule_error = self.get_schedule_config_for_queue()
+        if schedule_error is not None:
+            QMessageBox.warning(self, "重复频率无效", schedule_error)
+            return
 
         if self.is_local_db_mode() and self.current_task_id is not None:
             task_id = self.current_task_id
@@ -2737,15 +3177,17 @@ class ExcelSenderGUI(QWidget):
             dataset_type=task_details["dataset_type"] or self.get_current_dataset_type(records),
             template_preview=self.build_template_preview(records),
             total_count=len(records),
+            schedule_mode=schedule_mode,
+            schedule_value=schedule_value,
         )
         self.refresh_scheduled_jobs()
         self.append_log(
-            f"已创建定时任务 {job_id}，计划于 {scheduled_at.toString('yyyy-MM-dd HH:mm')} 执行，发送对象 {len(records)} 个。"
+            f"已创建定时任务 {job_id}，计划于 {scheduled_at.toString('yyyy-MM-dd HH:mm')} 执行，频率 {self.get_schedule_mode_text(schedule_mode, schedule_value)}，发送对象 {len(records)} 个。"
         )
         QMessageBox.information(
             self,
             "定时任务已创建",
-            f"任务ID：{job_id}\n计划时间：{scheduled_at.toString('yyyy-MM-dd HH:mm')}\n发送人数：{len(records)}",
+            f"任务ID：{job_id}\n计划时间：{scheduled_at.toString('yyyy-MM-dd HH:mm')}\n重复频率：{self.get_schedule_mode_text(schedule_mode, schedule_value)}\n发送人数：{len(records)}",
         )
 
     def execute_scheduled_job(self, job: ScheduledSendJob) -> None:
@@ -2832,6 +3274,7 @@ class ExcelSenderGUI(QWidget):
         self.current_runtime_records = [dict(row) for row in records]
         self.current_runtime_source_json_path = source_json_path
         self.current_runtime_log_path = log_path
+        self.last_runtime_summary = {}
 
         thread_kwargs = {
             "records": records,
@@ -2890,7 +3333,7 @@ class ExcelSenderGUI(QWidget):
             self.send_thread.request_stop()
             self.stop_button.setEnabled(False)
             self.send_status_label.setText("正在停止...")
-            self.append_log("已收到停止请求，等待当前发送动作完成。")
+            self.append_log("已收到停止请求，将在当前联系人到达安全停止点后尽快终止。")
 
     def on_send_progress(self, current: int, total: int, wechat_id: str) -> None:
         self.send_status_label.setText(f"发送进度：{current}/{total}")
@@ -2902,6 +3345,7 @@ class ExcelSenderGUI(QWidget):
             QMessageBox.warning(self, "发送异常", error_message)
 
     def on_send_completed(self, summary: dict) -> None:
+        self.last_runtime_summary = dict(summary)
         message = (
             f"总数：{summary['total']}\n"
             f"已发送：{summary['sent']}\n"
@@ -2925,7 +3369,9 @@ class ExcelSenderGUI(QWidget):
             message += f"\n线程异常：{summary['error']}"
         if self.current_runtime_log_path:
             message += f"\n日志文件：{self.current_runtime_log_path}"
-        if summary.get("stopped"):
+        if summary.get("stopped_by_error"):
+            message += "\n状态：异常停止"
+        elif summary.get("stopped"):
             message += "\n状态：已手动停止"
         else:
             message += "\n状态：已完成"
@@ -2933,11 +3379,27 @@ class ExcelSenderGUI(QWidget):
         self.send_status_label.setText("发送结束。")
         self.append_log("发送任务结束。")
         if self.active_scheduled_job is not None:
-            if summary.get("error"):
+            if summary.get("error") or summary.get("stopped_by_error"):
                 job_status = SCHEDULE_STATUS_FAILED
             elif summary.get("stopped"):
                 job_status = SCHEDULE_STATUS_CANCELLED
             else:
+                next_run_at = self.compute_next_run_time(
+                    self.active_scheduled_job,
+                    str(summary.get("finished_at") or ""),
+                )
+                if next_run_at:
+                    self.local_store.reschedule_scheduled_job(
+                        self.active_scheduled_job.job_id,
+                        next_scheduled_at=next_run_at,
+                        result=summary,
+                        last_error=summary.get("report_error", ""),
+                    )
+                    self.refresh_scheduled_jobs()
+                    self.append_log(
+                        f"定时任务 {self.active_scheduled_job.job_id} 本次完成，已按 {self.get_schedule_mode_text(self.active_scheduled_job.schedule_mode, self.active_scheduled_job.schedule_value)} 续排到 {next_run_at}。"
+                    )
+                    return
                 job_status = SCHEDULE_STATUS_COMPLETED
             self.local_store.complete_scheduled_job(
                 self.active_scheduled_job.job_id,
@@ -3110,7 +3572,15 @@ class ExcelSenderGUI(QWidget):
         payload = None
         if self.current_runtime_source_json_path and json_task_helper is not None:
             try:
-                if not summary.get("stopped"):
+                should_write_end_time = (
+                    not summary.get("stopped")
+                    and not summary.get("stopped_by_error")
+                    and (
+                        self.active_scheduled_job is None
+                        or str(self.active_scheduled_job.schedule_mode or SCHEDULE_MODE_ONCE) == SCHEDULE_MODE_ONCE
+                    )
+                )
+                if should_write_end_time:
                     json_task_helper.update_json_task_end_time(
                         self.current_runtime_source_json_path,
                         end_time=str(summary.get("finished_at") or datetime.now().strftime(JSON_TIME_FORMAT)),
@@ -3133,11 +3603,16 @@ class ExcelSenderGUI(QWidget):
 
     def showEvent(self, event) -> None:
         super().showEvent(event)
+        self.update_compact_ui_mode()
         if self._startup_layout_refreshed:
             return
         self._startup_layout_refreshed = True
         QTimer.singleShot(0, self.refresh_startup_layout)
         QTimer.singleShot(80, self.refresh_startup_layout)
+
+    def resizeEvent(self, event) -> None:
+        super().resizeEvent(event)
+        self.update_compact_ui_mode()
 
     def refresh_startup_layout(self) -> None:
         root_layout = self.layout()

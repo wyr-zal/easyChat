@@ -8,7 +8,6 @@ from typing import Any
 
 
 JSON_TIME_FORMAT = "%Y-%m-%d %H:%M:%S"
-SUPPORTED_ATTACHMENT_SUFFIXES = {".pdf", ".jpg", ".jpeg", ".png", ".bmp", ".webp"}
 IMAGE_ATTACHMENT_SUFFIXES = {".jpg", ".jpeg", ".png", ".bmp", ".webp"}
 PDF_ATTACHMENT_SUFFIXES = {".pdf"}
 
@@ -28,6 +27,11 @@ ATTACHMENT_STATUS_NONE = "none"
 ATTACHMENT_STATUS_SUCCESS = "success"
 ATTACHMENT_STATUS_FAILED = "failed"
 ATTACHMENT_STATUS_SKIPPED = "skipped"
+
+SCHEDULE_MODE_ONCE = "once"
+SCHEDULE_MODE_DAILY = "daily"
+SCHEDULE_MODE_WEEKLY = "weekly"
+SCHEDULE_MODE_CRON = "cron"
 
 
 def now_text() -> str:
@@ -51,7 +55,7 @@ def detect_attachment_type(path_value: str | Path) -> str:
         return "pdf"
     if suffix in IMAGE_ATTACHMENT_SUFFIXES:
         return "image"
-    raise ValueError(f"不支持的附件类型：{suffix or '无后缀'}")
+    return "file"
 
 
 def normalize_attachment_item(
@@ -70,15 +74,11 @@ def normalize_attachment_item(
     if file_path == "":
         raise ValueError("附件路径不能为空。")
 
-    suffix = Path(file_path).suffix.lower()
-    if suffix not in SUPPORTED_ATTACHMENT_SUFFIXES:
-        raise ValueError(f"附件类型不合法：{suffix}")
-
     if validate_exists and not Path(file_path).exists():
         raise ValueError(f"附件不存在：{file_path}")
 
     normalized_type = detect_attachment_type(file_path)
-    if file_type and file_type not in {normalized_type, "pdf", "image"}:
+    if file_type and file_type not in {normalized_type, "pdf", "image", "file"}:
         raise ValueError(f"附件 file_type 与路径后缀不匹配：{file_path}")
 
     return {
@@ -205,6 +205,13 @@ def validate_json_task_payload(
         validate_exists=validate_exists,
     )
 
+    schedule_mode = str(payload.get("schedule_mode", SCHEDULE_MODE_ONCE) or SCHEDULE_MODE_ONCE).strip().lower()
+    if schedule_mode not in {SCHEDULE_MODE_ONCE, SCHEDULE_MODE_DAILY, SCHEDULE_MODE_WEEKLY, SCHEDULE_MODE_CRON}:
+        raise ValueError("schedule_mode 只能是 once / daily / weekly / cron。")
+    schedule_value = str(payload.get("schedule_value", "") or "").strip()
+    if schedule_mode == SCHEDULE_MODE_CRON and schedule_value == "":
+        raise ValueError("schedule_mode=cron 时必须提供 schedule_value。")
+
     raw_targets = payload.get("targets", [])
     if not isinstance(raw_targets, list) or not raw_targets:
         raise ValueError("JSON 必须包含至少一个 targets 条目。")
@@ -222,6 +229,8 @@ def validate_json_task_payload(
     return {
         "start_time": start_time,
         "end_time": end_time,
+        "schedule_mode": schedule_mode,
+        "schedule_value": schedule_value,
         "total_count": int(payload.get("total_count") or len(normalized_targets)),
         "template_content": str(payload.get("template_content", "") or ""),
         "common_attachments": common_attachments,

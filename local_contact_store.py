@@ -57,6 +57,11 @@ SCHEDULE_STATUS_COMPLETED = "completed"
 SCHEDULE_STATUS_CANCELLED = "cancelled"
 SCHEDULE_STATUS_FAILED = "failed"
 
+SCHEDULE_MODE_ONCE = "once"
+SCHEDULE_MODE_DAILY = "daily"
+SCHEDULE_MODE_WEEKLY = "weekly"
+SCHEDULE_MODE_CRON = "cron"
+
 TASK_KIND_STANDARD = "standard"
 TASK_KIND_JSON = "json"
 CONFLICT_STATUS_WAITING = "waiting"
@@ -106,6 +111,8 @@ class ScheduledSendJob:
     wait_notified_at: str = ""
     log_path: str = ""
     json_writeback_enabled: int = 0
+    schedule_mode: str = SCHEDULE_MODE_ONCE
+    schedule_value: str = ""
 
     @property
     def dataset_label(self) -> str:
@@ -309,6 +316,8 @@ class LocalContactStore:
             self._ensure_column(connection, "scheduled_send_jobs", "wait_notified_at", "TEXT NOT NULL DEFAULT ''")
             self._ensure_column(connection, "scheduled_send_jobs", "log_path", "TEXT NOT NULL DEFAULT ''")
             self._ensure_column(connection, "scheduled_send_jobs", "json_writeback_enabled", "INTEGER NOT NULL DEFAULT 0")
+            self._ensure_column(connection, "scheduled_send_jobs", "schedule_mode", "TEXT NOT NULL DEFAULT 'once'")
+            self._ensure_column(connection, "scheduled_send_jobs", "schedule_value", "TEXT NOT NULL DEFAULT ''")
 
         self._migrate_legacy_current_batch()
 
@@ -687,8 +696,11 @@ class LocalContactStore:
         wait_notified_at: str = "",
         log_path: str = "",
         json_writeback_enabled: bool = False,
+        schedule_mode: str = SCHEDULE_MODE_ONCE,
+        schedule_value: str = "",
     ) -> int:
         created_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        normalized_schedule_mode = self.normalize_schedule_mode(schedule_mode)
         with self.connect() as connection:
             cursor = connection.execute(
                 """
@@ -714,9 +726,11 @@ class LocalContactStore:
                     conflict_notified,
                     wait_notified_at,
                     log_path,
-                    json_writeback_enabled
+                    json_writeback_enabled,
+                    schedule_mode,
+                    schedule_value
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     task_id,
@@ -741,6 +755,8 @@ class LocalContactStore:
                     str(wait_notified_at or "").strip(),
                     str(log_path or "").strip(),
                     1 if json_writeback_enabled else 0,
+                    normalized_schedule_mode,
+                    str(schedule_value or "").strip(),
                 ),
             )
         return int(cursor.lastrowid)
@@ -755,7 +771,7 @@ class LocalContactStore:
                        started_at, completed_at, last_error, result_json,
                        task_kind, source_json_path, source_json_name, wait_reason,
                        conflict_status, conflict_notified, wait_notified_at, log_path,
-                       json_writeback_enabled
+                       json_writeback_enabled, schedule_mode, schedule_value
                 FROM scheduled_send_jobs
                 ORDER BY
                     CASE status
@@ -782,7 +798,7 @@ class LocalContactStore:
                        started_at, completed_at, last_error, result_json,
                        task_kind, source_json_path, source_json_name, wait_reason,
                        conflict_status, conflict_notified, wait_notified_at, log_path,
-                       json_writeback_enabled
+                       json_writeback_enabled, schedule_mode, schedule_value
                 FROM scheduled_send_jobs
                 WHERE status = ? AND scheduled_at <= ?
                 ORDER BY scheduled_at ASC, id ASC
@@ -855,6 +871,49 @@ class LocalContactStore:
                 ),
             )
         return cursor.rowcount > 0
+
+    def delete_scheduled_job(self, job_id: int) -> bool:
+        with self.connect() as connection:
+            cursor = connection.execute(
+                """
+                DELETE FROM scheduled_send_jobs
+                WHERE id = ? AND status != ?
+                """,
+                (job_id, SCHEDULE_STATUS_RUNNING),
+            )
+        return cursor.rowcount > 0
+
+    def reschedule_scheduled_job(
+        self,
+        job_id: int,
+        *,
+        next_scheduled_at: str,
+        result: dict | None = None,
+        last_error: str = "",
+    ) -> None:
+        with self.connect() as connection:
+            connection.execute(
+                """
+                UPDATE scheduled_send_jobs
+                SET status = ?,
+                    scheduled_at = ?,
+                    completed_at = '',
+                    last_error = ?,
+                    result_json = ?,
+                    conflict_status = '',
+                    wait_reason = '',
+                    conflict_notified = 0,
+                    wait_notified_at = ''
+                WHERE id = ?
+                """,
+                (
+                    SCHEDULE_STATUS_PENDING,
+                    next_scheduled_at,
+                    str(last_error or "").strip(),
+                    json.dumps(result or {}, ensure_ascii=False),
+                    job_id,
+                ),
+            )
 
     def create_json_task_from_payload(
         self,
@@ -953,6 +1012,8 @@ class LocalContactStore:
             wait_reason=f"导入时已跳过 {skipped_success} 个 success 目标。" if skipped_success else "",
             log_path=resolved_log_path,
             json_writeback_enabled=json_writeback_enabled,
+            schedule_mode=str(normalized_payload.get("schedule_mode") or SCHEDULE_MODE_ONCE),
+            schedule_value=str(normalized_payload.get("schedule_value") or ""),
         )
         return task_id, job_id
 
@@ -1211,7 +1272,7 @@ class LocalContactStore:
                        started_at, completed_at, last_error, result_json,
                        task_kind, source_json_path, source_json_name, wait_reason,
                        conflict_status, conflict_notified, wait_notified_at, log_path,
-                       json_writeback_enabled
+                       json_writeback_enabled, schedule_mode, schedule_value
                 FROM scheduled_send_jobs
                 WHERE task_kind = ?
                 ORDER BY
@@ -1418,7 +1479,20 @@ class LocalContactStore:
             wait_notified_at=str(row["wait_notified_at"] or ""),
             log_path=str(row["log_path"] or ""),
             json_writeback_enabled=int(row["json_writeback_enabled"] or 0),
+            schedule_mode=self.normalize_schedule_mode(row["schedule_mode"]),
+            schedule_value=str(row["schedule_value"] or ""),
         )
+
+    def normalize_schedule_mode(self, value: object) -> str:
+        normalized = str(value or SCHEDULE_MODE_ONCE).strip().lower()
+        if normalized in {
+            SCHEDULE_MODE_ONCE,
+            SCHEDULE_MODE_DAILY,
+            SCHEDULE_MODE_WEEKLY,
+            SCHEDULE_MODE_CRON,
+        }:
+            return normalized
+        return SCHEDULE_MODE_ONCE
 
     def _clean_record_for_storage(self, row: dict[str, str]) -> dict[str, str]:
         return {
