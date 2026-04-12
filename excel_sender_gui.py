@@ -223,6 +223,9 @@ class ExcelSenderGUI(QWidget):
         if "debug_mode_enabled" not in bulk_send_config:
             bulk_send_config["debug_mode_enabled"] = False
             changed = True
+        if "stop_on_error" not in bulk_send_config:
+            bulk_send_config["stop_on_error"] = True
+            changed = True
         if "schedule_mode" not in bulk_send_config:
             bulk_send_config["schedule_mode"] = SCHEDULE_MODE_ONCE
             changed = True
@@ -417,6 +420,9 @@ class ExcelSenderGUI(QWidget):
 
     def is_debug_mode_enabled(self) -> bool:
         return bool(hasattr(self, "debug_mode_button") and self.debug_mode_button.isChecked())
+
+    def is_stop_on_error_enabled(self) -> bool:
+        return bool(hasattr(self, "stop_on_error_checkbox") and self.stop_on_error_checkbox.isChecked())
 
     def update_debug_mode_button_text(self) -> None:
         if not hasattr(self, "debug_mode_button"):
@@ -689,6 +695,10 @@ class ExcelSenderGUI(QWidget):
         self.auto_report_checkbox = QCheckBox("任务完成后自动汇报", self)
         self.auto_report_checkbox.toggled.connect(self.on_bulk_send_option_changed)
         report_grid.addWidget(self.auto_report_checkbox, 2, 0, 1, 2)
+        self.stop_on_error_checkbox = QCheckBox("单条异常后停止后续发送", self)
+        self.stop_on_error_checkbox.setToolTip("开启：某个联系人发送失败时立即停止整批任务；关闭：记录失败后继续发后面的联系人。")
+        self.stop_on_error_checkbox.toggled.connect(self.on_bulk_send_option_changed)
+        report_grid.addWidget(self.stop_on_error_checkbox, 3, 0, 1, 2)
         layout.addLayout(report_grid)
         layout.addStretch(1)
 
@@ -743,6 +753,7 @@ class ExcelSenderGUI(QWidget):
         self.schedule_table.setHorizontalHeaderLabels(["队列ID", "计划时间", "执行状态", "自动调度", "人数", "来源", "内容摘要"])
         self.schedule_table.verticalHeader().setVisible(False)
         self.schedule_table.setSelectionBehavior(QTableWidget.SelectRows)
+        self.schedule_table.setSelectionMode(QAbstractItemView.ExtendedSelection)
         self.schedule_table.setEditTriggers(QAbstractItemView.NoEditTriggers)
         self.schedule_table.itemSelectionChanged.connect(self.update_action_button_state)
         self.schedule_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeToContents)
@@ -1130,6 +1141,7 @@ class ExcelSenderGUI(QWidget):
             self.operator_name_input.setText(str(bulk_send["operator_name"]))
             self.report_to_input.setText(str(bulk_send["report_to"]))
             self.auto_report_checkbox.setChecked(bool(bulk_send["auto_report_enabled"]))
+            self.stop_on_error_checkbox.setChecked(bool(bulk_send.get("stop_on_error", True)))
             self.debug_mode_button.setChecked(bool(bulk_send.get("debug_mode_enabled")))
             schedule_mode = str(bulk_send.get("schedule_mode") or SCHEDULE_MODE_ONCE)
             schedule_value = str(bulk_send.get("schedule_value") or "")
@@ -1615,6 +1627,7 @@ class ExcelSenderGUI(QWidget):
         self.config["bulk_send"]["operator_name"] = self.operator_name_input.text().strip()
         self.config["bulk_send"]["report_to"] = self.report_to_input.text().strip() or DEFAULT_REPORT_TARGET
         self.config["bulk_send"]["auto_report_enabled"] = self.auto_report_checkbox.isChecked()
+        self.config["bulk_send"]["stop_on_error"] = self.is_stop_on_error_enabled()
         self.config["bulk_send"]["debug_mode_enabled"] = self.is_debug_mode_enabled()
         self.config["bulk_send"]["schedule_mode"] = self.get_selected_schedule_mode()
         self.config["bulk_send"]["schedule_value"] = self.schedule_value_input.text().strip() if hasattr(self, "schedule_value_input") else ""
@@ -2243,18 +2256,40 @@ class ExcelSenderGUI(QWidget):
         QMessageBox.warning(self, "关闭失败", "关闭自动调度失败，可能任务已开始执行。")
 
     def delete_selected_scheduled_job(self) -> None:
-        selected_job = self.get_selected_scheduled_job()
-        if selected_job is None:
+        selection_model = self.schedule_table.selectionModel()
+        selected_rows = selection_model.selectedRows() if selection_model is not None else []
+        if not selected_rows:
             QMessageBox.information(self, "未选择任务", "请先选择要删除的队列任务。")
             return
-        if selected_job.status == SCHEDULE_STATUS_RUNNING:
-            QMessageBox.information(self, "无法删除", "正在执行中的任务不能删除，请等待结束或先停止。")
+
+        selected_job_ids: list[int] = []
+        for model_index in selected_rows:
+            job_item = self.schedule_table.item(model_index.row(), 0)
+            if job_item is None:
+                continue
+            try:
+                selected_job_ids.append(int(str(job_item.text()).strip()))
+            except (TypeError, ValueError):
+                continue
+        selected_job_ids = list(dict.fromkeys(selected_job_ids))
+        if not selected_job_ids:
+            QMessageBox.information(self, "未选择任务", "当前没有可删除的有效队列任务。")
             return
+
+        job_map = {job.job_id: job for job in self.local_store.list_scheduled_jobs(limit=500)}
+        running_job_ids = [job_id for job_id in selected_job_ids if job_map.get(job_id) is not None and job_map[job_id].status == SCHEDULE_STATUS_RUNNING]
+        deletable_job_ids = [job_id for job_id in selected_job_ids if job_id not in running_job_ids]
+        if not deletable_job_ids:
+            QMessageBox.information(self, "无法删除", "选中的任务都在执行中，不能删除，请等待结束或先停止。")
+            return
+
         reply = QMessageBox.question(
             self,
             "确认删除队列记录",
             (
-                f"将删除队列任务 {selected_job.job_id}。\n"
+                f"准备删除 {len(deletable_job_ids)} 个队列任务"
+                + (f"（运行中 {len(running_job_ids)} 个会跳过）" if running_job_ids else "")
+                + "。\n"
                 "仅删除调度记录，不会删除任务快照，也不会删除原始 JSON 文件。\n\n"
                 "确认继续吗？"
             ),
@@ -2263,10 +2298,25 @@ class ExcelSenderGUI(QWidget):
         )
         if reply != QMessageBox.Yes:
             return
-        if self.local_store.delete_scheduled_job(selected_job.job_id):
-            self.refresh_scheduled_jobs()
-            self.append_log(f"已删除队列任务 {selected_job.job_id}（仅调度记录）。")
-        else:
+
+        deleted_ids: list[str] = []
+        failed_ids: list[str] = []
+        for job_id in deletable_job_ids:
+            if self.local_store.delete_scheduled_job(job_id):
+                deleted_ids.append(str(job_id))
+            else:
+                failed_ids.append(str(job_id))
+
+        self.refresh_scheduled_jobs()
+
+        if deleted_ids:
+            self.append_log(f"已批量删除队列任务：{', '.join(deleted_ids)}（仅调度记录）。")
+        if running_job_ids:
+            self.append_log(f"以下任务正在执行，已跳过删除：{', '.join(str(job_id) for job_id in running_job_ids)}")
+        if failed_ids:
+            self.append_log(f"以下任务删除失败：{', '.join(failed_ids)}")
+
+        if failed_ids and not deleted_ids:
             QMessageBox.warning(self, "删除失败", "删除队列记录失败，可能任务已开始执行。")
 
     def preview_selected_scheduled_job(self) -> None:
@@ -3386,6 +3436,7 @@ class ExcelSenderGUI(QWidget):
             "report_to": report_to,
             "auto_report": auto_report,
             "debug_mode": self.is_debug_mode_enabled(),
+            "stop_on_error": self.is_stop_on_error_enabled(),
             "common_attachments": common_attachments,
             "target_result_callback": self.handle_target_result,
             "target_log_callback": self.handle_target_log,
@@ -3424,7 +3475,10 @@ class ExcelSenderGUI(QWidget):
             start_message = "开始执行 Excel 个性化群发。"
         if self.is_debug_mode_enabled():
             start_message = start_message.rstrip("。") + "（调试模式：会自动定位联系人并预填消息草稿，但不会按回车发送）。"
+        if not self.is_stop_on_error_enabled():
+            start_message = start_message.rstrip("。") + "（失败策略：记录失败后继续发送）。"
         self.append_log(start_message)
+        self.append_runtime_log_line(start_message)
 
     def stop_sending(self) -> None:
         if self.send_thread is not None and self.send_thread.isRunning():
@@ -3531,6 +3585,22 @@ class ExcelSenderGUI(QWidget):
     def append_log(self, message: str) -> None:
         self.log_view.appendPlainText(message)
         self.log_view.verticalScrollBar().setValue(self.log_view.verticalScrollBar().maximum())
+
+    def append_runtime_log_line(self, entry: str | dict[str, Any]) -> None:
+        if not self.current_runtime_log_path:
+            return
+        if json_task_helper is not None:
+            try:
+                json_task_helper.append_task_log(self.current_runtime_log_path, entry)
+                return
+            except Exception as exc:
+                self.append_log(f"写入任务日志失败：{exc}")
+                return
+        path = Path(self.current_runtime_log_path)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        text = entry if isinstance(entry, str) else json.dumps(entry, ensure_ascii=False)
+        with path.open("a", encoding="utf-8") as handle:
+            handle.write(str(text).rstrip() + "\n")
 
     def resolve_runtime_log_path(self, task_id: int, source_json_path: str = "") -> str:
         if json_task_helper is not None:
@@ -3639,6 +3709,22 @@ class ExcelSenderGUI(QWidget):
         if not self.current_runtime_log_path:
             return
         if not row_result or (not row_result.get("target_value") and not row_result.get("send_status")):
+            stage_message = _message.strip()
+            if stage_message:
+                self.append_runtime_log_line(f"{datetime.now().strftime(JSON_TIME_FORMAT)} | stage={stage_message}")
+            return
+        if str(row_result.get("log_type") or "") == "stage":
+            stage = str(row_result.get("stage") or "").strip() or "未知阶段"
+            target = str(row_result.get("target_value") or "-").strip() or "-"
+            detail = str(row_result.get("detail") or "").strip()
+            index = row_result.get("index")
+            total = row_result.get("total")
+            prefix = f"{datetime.now().strftime(JSON_TIME_FORMAT)} | stage={stage} | target={target}"
+            if index and total:
+                prefix += f" | progress={index}/{total}"
+            if detail:
+                prefix += f" | detail={detail}"
+            self.append_runtime_log_line(prefix)
             return
         if json_task_helper is not None:
             try:

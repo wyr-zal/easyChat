@@ -7,6 +7,7 @@ from datetime import datetime
 from pathlib import Path
 from unittest import mock
 
+from PyQt5.QtCore import QItemSelectionModel
 from PyQt5.QtWidgets import QApplication
 from PyQt5.QtWidgets import QMessageBox
 from PyQt5.QtWidgets import QPushButton
@@ -114,6 +115,50 @@ class ExcelSenderGuiRuntimeTests(unittest.TestCase):
                 self.assertIn("预填消息草稿", reopened.debug_mode_button.toolTip())
             finally:
                 reopened.close()
+
+    def test_stop_on_error_checkbox_state_persists_after_restart(self) -> None:
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp_dir:
+            tmp = Path(tmp_dir)
+            window = self.create_window(tmp)
+            try:
+                self.assertTrue(window.stop_on_error_checkbox.isChecked())
+                window.stop_on_error_checkbox.click()
+                self.assertFalse(window.stop_on_error_checkbox.isChecked())
+            finally:
+                window.close()
+
+            reopened = self.create_window(tmp)
+            try:
+                self.assertFalse(reopened.stop_on_error_checkbox.isChecked())
+            finally:
+                reopened.close()
+
+    def test_handle_target_log_writes_stage_entries_to_runtime_log(self) -> None:
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp_dir:
+            tmp = Path(tmp_dir)
+            log_path = tmp / "runtime.easychat.log"
+            window = self.create_window(tmp)
+            try:
+                window.current_runtime_log_path = str(log_path)
+                window.handle_target_log(
+                    "[1/2] 张三 -> 发送文本消息",
+                    {
+                        "log_type": "stage",
+                        "stage": "发送文本消息",
+                        "target_value": "张三",
+                        "index": 1,
+                        "total": 2,
+                        "detail": "",
+                        "timestamp": "2026-04-12 21:00:00",
+                    },
+                )
+                window.handle_target_log("发送线程启动：共 2 个目标。", {})
+                content = log_path.read_text(encoding="utf-8")
+                self.assertIn("stage=发送文本消息", content)
+                self.assertIn("target=张三", content)
+                self.assertIn("stage=发送线程启动：共 2 个目标。", content)
+            finally:
+                window.close()
 
     def test_preview_table_header_font_matches_window_font_size(self) -> None:
         with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp_dir:
@@ -425,6 +470,55 @@ class ExcelSenderGuiRuntimeTests(unittest.TestCase):
                     window.delete_selected_scheduled_job()
                 self.assertEqual(store.list_scheduled_jobs(limit=10), [])
                 self.assertIsNotNone(store.get_task_details(task_id))
+            finally:
+                window.close()
+
+    def test_delete_selected_scheduled_job_supports_batch_rows(self) -> None:
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp_dir:
+            tmp = Path(tmp_dir)
+            window = self.create_window(tmp)
+            store = window.local_store
+            task_ids = [
+                store.create_task_snapshot(
+                    rows=[{"__target_value": f"A{index}", "target_type": "person"}],
+                    filter_fields="",
+                    filter_pattern="",
+                    target_column="target_value",
+                    template_text="hello",
+                    source_batch_id=None,
+                    source_mode="file",
+                )
+                for index in range(3)
+            ]
+            job_ids = [
+                store.create_scheduled_job(
+                    task_id=task_id,
+                    scheduled_at=f"2099-01-01 00:00:0{offset}",
+                    interval_seconds=1,
+                    random_delay_min=0,
+                    random_delay_max=0,
+                    operator_name="tester",
+                    report_to="tester",
+                    source_mode="file",
+                    dataset_type="all",
+                    template_preview="hello",
+                    total_count=1,
+                )
+                for offset, task_id in enumerate(task_ids, start=1)
+            ]
+            try:
+                window.refresh_scheduled_jobs()
+                selection_model = window.schedule_table.selectionModel()
+                for row_index in (0, 1):
+                    model_index = window.schedule_table.model().index(row_index, 0)
+                    selection_model.select(
+                        model_index,
+                        QItemSelectionModel.Select | QItemSelectionModel.Rows,
+                    )
+                with mock.patch("excel_sender_gui.QMessageBox.question", return_value=QMessageBox.Yes):
+                    window.delete_selected_scheduled_job()
+                remaining_job_ids = [job.job_id for job in store.list_scheduled_jobs(limit=10)]
+                self.assertEqual(remaining_job_ids, [job_ids[2]])
             finally:
                 window.close()
 

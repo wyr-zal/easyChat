@@ -84,6 +84,7 @@ class PersonalizedSendThread(QThread):
         report_to: str = DEFAULT_REPORT_TARGET,
         auto_report: bool = True,
         debug_mode: bool = False,
+        stop_on_error: bool = True,
         common_attachments: list | None = None,
         target_result_callback: Callable[[dict], None] | None = None,
         target_log_callback: Callable[[str, dict], None] | None = None,
@@ -105,6 +106,7 @@ class PersonalizedSendThread(QThread):
         self.report_to = report_to.strip() or DEFAULT_REPORT_TARGET
         self.auto_report = auto_report
         self.debug_mode = bool(debug_mode)
+        self.stop_on_error = bool(stop_on_error)
         self.common_attachments = self._normalize_attachment_items(common_attachments or [])
         self.target_result_callback = target_result_callback
         self.target_log_callback = target_log_callback
@@ -147,6 +149,7 @@ class PersonalizedSendThread(QThread):
             import uiautomation as auto
 
             sender = WeChatSenderService(path=self.wechat_path, locale=self.locale)
+            self._emit_log(f"发送线程启动：共 {total} 个目标，失败策略={'异常即停' if self.stop_on_error else '失败后继续'}。")
             if self.debug_mode:
                 self._emit_log("调试模式已开启：本次会自动定位联系人并预填消息草稿，但不会按回车发送；附件与自动汇报也不会真实发送。")
 
@@ -187,6 +190,10 @@ class PersonalizedSendThread(QThread):
                         summary["interrupted_index"] = index
                         self._emit_log(f"检测到发送异常，任务已在 {summary['interrupted_target'] or f'第{index}项'} 后立即停止。")
                         break
+                    if row_result["send_status"] in {SEND_STATUS_FAILED, SEND_STATUS_PARTIAL_SUCCESS} and not self.stop_on_error:
+                        self._emit_log(
+                            f"[{index}/{total}] 已记录失败并继续后续目标：{row_result.get('target_value') or f'第{index}项'}。"
+                        )
 
                     if stopped_after_target:
                         summary["stopped"] = True
@@ -221,6 +228,7 @@ class PersonalizedSendThread(QThread):
             self._emit_log(f"调试模式：已跳过向 {self.report_to} 的自动汇报发送。")
         elif self.auto_report and (not summary["stopped"]) and sender is not None and self.report_to:
             try:
+                self._emit_log(f"开始自动汇报：准备向 {self.report_to} 发送任务总结。")
                 sender.send_text_message(
                     self.report_to,
                     self._build_report_text(summary),
@@ -279,6 +287,7 @@ class PersonalizedSendThread(QThread):
         has_message = bool(message.strip())
         has_attachments = bool(attachments)
         debug_skip_message = "调试模式：未实际发送"
+        self._emit_stage_log(index, total, target_value, "开始处理目标")
 
         if not has_message and not has_attachments:
             row_result["error_msg"] = "消息与附件均为空"
@@ -288,6 +297,7 @@ class PersonalizedSendThread(QThread):
         text_error = ""
         if self.debug_mode:
             try:
+                self._emit_stage_log(index, total, target_value, "定位联系人并预填消息草稿")
                 sender.prepare_text_message(
                     target_value,
                     message if has_message else "",
@@ -302,6 +312,7 @@ class PersonalizedSendThread(QThread):
                 self._emit_log(f"[{index}/{total}] 调试预填失败：{target_value}，错误：{exc}", row_result)
         elif has_message:
             try:
+                self._emit_stage_log(index, total, target_value, "发送文本消息")
                 sender.send_text_message(target_value, message, search_user=True)
                 row_result["text_status"] = TEXT_STATUS_SUCCESS
             except Exception as exc:
@@ -361,6 +372,13 @@ class PersonalizedSendThread(QThread):
                         "error_msg": "",
                     }
                     try:
+                        self._emit_stage_log(
+                            index,
+                            total,
+                            target_value,
+                            f"发送附件 {attachment_index}/{len(attachments)}",
+                            detail=Path(file_path).name or file_path,
+                        )
                         sender.send_file(
                             target_value,
                             file_path,
@@ -416,7 +434,7 @@ class PersonalizedSendThread(QThread):
                 row_result["error_msg"] = desired_debug_message
         if self._stop_requested:
             row_result["_stop_requested"] = True
-        elif row_result["send_status"] in {SEND_STATUS_FAILED, SEND_STATUS_PARTIAL_SUCCESS}:
+        elif self.stop_on_error and row_result["send_status"] in {SEND_STATUS_FAILED, SEND_STATUS_PARTIAL_SUCCESS}:
             row_result["_abort_remaining"] = True
 
         status_text = self._build_target_status_text(row_result)
@@ -620,6 +638,31 @@ class PersonalizedSendThread(QThread):
             self.target_log_callback(message, payload)
         except Exception as callback_exc:
             self.log.emit(f"日志回调执行失败：{callback_exc}")
+
+    def _emit_stage_log(
+        self,
+        index: int,
+        total: int,
+        target_value: str,
+        stage: str,
+        *,
+        detail: str = "",
+    ) -> None:
+        stage_message = f"[{index}/{total}] {target_value or '-'} -> {stage}"
+        if detail:
+            stage_message += f"：{detail}"
+        self._emit_log(
+            stage_message,
+            {
+                "log_type": "stage",
+                "index": index,
+                "total": total,
+                "target_value": target_value,
+                "stage": stage,
+                "detail": detail,
+                "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            },
+        )
 
     def _safe_target_result_callback(self, row_result: dict) -> None:
         if self.target_result_callback is None:

@@ -164,6 +164,8 @@ class ExcelSenderServiceStopTests(unittest.TestCase):
             interval_seconds=0,
             target_column="__target_value",
             auto_report=False,
+            random_delay_min=0,
+            random_delay_max=0,
             summary_callback=lambda summary: summary_holder.update(summary),
         )
 
@@ -191,6 +193,47 @@ class ExcelSenderServiceStopTests(unittest.TestCase):
         self.assertEqual(summary_holder.get("sent"), 1)
         self.assertEqual(summary_holder.get("interrupted_target"), "李四")
         self.assertEqual(summary_holder.get("interrupted_index"), 2)
+
+    def test_send_error_can_continue_when_stop_on_error_disabled(self) -> None:
+        summary_holder: dict = {}
+        thread = PersonalizedSendThread(
+            records=[
+                {"__target_value": "张三", "message_mode": "custom", "message": "您好"},
+                {"__target_value": "李四", "message_mode": "custom", "message": "您好"},
+                {"__target_value": "王五", "message_mode": "custom", "message": "您好"},
+            ],
+            template="",
+            interval_seconds=0,
+            target_column="__target_value",
+            auto_report=False,
+            stop_on_error=False,
+            random_delay_min=0,
+            random_delay_max=0,
+            summary_callback=lambda summary: summary_holder.update(summary),
+        )
+
+        sender_holder: dict[str, _FailOnTargetSenderService] = {}
+
+        def _sender_factory(*args, **kwargs):
+            _ = args, kwargs
+            sender = _FailOnTargetSenderService(thread_ref=thread)
+            sender_holder["sender"] = sender
+            return sender
+
+        fake_auto = types.SimpleNamespace(
+            UIAutomationInitializerInThread=_fake_uiautomation_initializer
+        )
+
+        with mock.patch("excel_sender_service.WeChatSenderService", side_effect=_sender_factory), \
+             mock.patch.dict(sys.modules, {"uiautomation": fake_auto}):
+            thread.run()
+
+        sender = sender_holder["sender"]
+        self.assertEqual(sender.text_targets, ["张三", "李四", "王五"])
+        self.assertFalse(summary_holder.get("stopped"))
+        self.assertFalse(summary_holder.get("stopped_by_error"))
+        self.assertEqual(summary_holder.get("failed"), 1)
+        self.assertEqual(summary_holder.get("sent"), 2)
 
 
 if __name__ == "__main__":
