@@ -122,10 +122,57 @@ class LocalContactStoreJsonTests(unittest.TestCase):
             self.assertEqual(job.source_json_path, str(json_path))
             self.assertEqual(job.schedule_mode, SCHEDULE_MODE_CRON)
             self.assertEqual(job.schedule_value, "0 9 * * 1-5")
+            self.assertEqual(job.enabled, 1)
 
             self.assertTrue(store.delete_scheduled_job(job_id))
             self.assertEqual(store.list_json_jobs(limit=10), [])
             self.assertIsNotNone(store.get_task_details(task_id))
+
+            del store
+            gc.collect()
+
+    def test_disable_scheduled_job_excludes_it_from_due_queue(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            temp_path = Path(tmp_dir)
+            db_path = temp_path / DEFAULT_LOCAL_DB_PATH.name
+            store = LocalContactStore(db_path)
+
+            task_id = store.create_task_snapshot(
+                rows=[{"__target_value": "张三", "target_type": "person"}],
+                filter_fields="",
+                filter_pattern="",
+                target_column="target_value",
+                template_text="您好",
+                source_batch_id=None,
+                source_mode=SOURCE_MODE_JSON,
+                task_kind=TASK_KIND_JSON,
+            )
+            job_id = store.create_scheduled_job(
+                task_id=task_id,
+                scheduled_at="2000-01-01 00:00:00",
+                interval_seconds=5,
+                random_delay_min=0,
+                random_delay_max=0,
+                operator_name="tester",
+                report_to="reporter",
+                source_mode=SOURCE_MODE_JSON,
+                dataset_type="all",
+                template_preview="您好",
+                total_count=1,
+                task_kind=TASK_KIND_JSON,
+            )
+
+            due_jobs = store.get_due_scheduled_jobs("2099-01-01 00:00:00", limit=10)
+            self.assertEqual([job.job_id for job in due_jobs], [job_id])
+
+            self.assertTrue(store.set_scheduled_job_enabled(job_id, False))
+            refreshed_job = store.list_scheduled_jobs(limit=10)[0]
+            self.assertEqual(refreshed_job.enabled, 0)
+            self.assertEqual(store.get_due_scheduled_jobs("2099-01-01 00:00:00", limit=10), [])
+
+            self.assertTrue(store.set_scheduled_job_enabled(job_id, True))
+            due_jobs = store.get_due_scheduled_jobs("2099-01-01 00:00:00", limit=10)
+            self.assertEqual([job.job_id for job in due_jobs], [job_id])
 
             del store
             gc.collect()

@@ -72,6 +72,30 @@ class ExcelSenderGuiRuntimeTests(unittest.TestCase):
             finally:
                 window.close()
 
+    def test_window_minimum_size_is_smaller_than_previous_layout(self) -> None:
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp_dir:
+            tmp = Path(tmp_dir)
+            window = self.create_window(tmp)
+            try:
+                self.assertEqual(window.minimumWidth(), 760)
+                self.assertEqual(window.minimumHeight(), 540)
+            finally:
+                window.close()
+
+    def test_main_tabs_split_send_prepare_and_task_center(self) -> None:
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp_dir:
+            tmp = Path(tmp_dir)
+            window = self.create_window(tmp)
+            try:
+                tab_texts = [window.main_tabs.tabText(index) for index in range(window.main_tabs.count())]
+                self.assertEqual(tab_texts, ["数据与模板", "本地库数据", "发送准备", "任务中心"])
+                self.assertIs(window.main_tabs.widget(2), window.send_prepare_page)
+                self.assertIs(window.main_tabs.widget(3), window.task_center_page)
+                headers = [window.schedule_table.horizontalHeaderItem(index).text() for index in range(window.schedule_table.columnCount())]
+                self.assertEqual(headers, ["队列ID", "计划时间", "执行状态", "自动调度", "人数", "来源", "内容摘要"])
+            finally:
+                window.close()
+
     def test_debug_mode_button_state_persists_after_restart(self) -> None:
         with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp_dir:
             tmp = Path(tmp_dir)
@@ -126,9 +150,9 @@ class ExcelSenderGuiRuntimeTests(unittest.TestCase):
                 window.resize(1000, 700)
                 self.app.processEvents()
                 self.assertEqual(window.start_button.text(), "开始发送")
-                self.assertEqual(window.preview_button.text(), "刷新计划")
-                self.assertEqual(window.import_json_button.text(), "导入 JSON")
-                self.assertEqual(window.refresh_schedule_button.text(), "刷新列表")
+                self.assertEqual(window.preview_button.text(), "刷新")
+                self.assertEqual(window.import_json_button.text(), "导入")
+                self.assertEqual(window.refresh_schedule_button.text(), "刷新")
             finally:
                 window.close()
 
@@ -555,6 +579,114 @@ class ExcelSenderGuiRuntimeTests(unittest.TestCase):
                 self.assertEqual(jobs[job_two].conflict_status, "waiting")
             finally:
                 window.send_thread = None
+                window.close()
+
+    def test_disabled_job_is_not_auto_polled_but_can_start_manually(self) -> None:
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp_dir:
+            tmp = Path(tmp_dir)
+            json_path = tmp / "task.json"
+            json_path.write_text("{}", encoding="utf-8")
+
+            window = self.create_window(tmp)
+            store = window.local_store
+            task_id = store.create_task_snapshot(
+                rows=[{"__target_value": "A", "target_type": "person"}],
+                filter_fields="",
+                filter_pattern="",
+                target_column="target_value",
+                template_text="hello",
+                source_batch_id=None,
+                source_mode=SOURCE_MODE_JSON,
+                task_kind="json",
+                source_json_path=str(json_path),
+                source_json_name=json_path.name,
+                json_start_time="2000-01-01 00:00:00",
+            )
+            job_id = store.create_scheduled_job(
+                task_id=task_id,
+                scheduled_at="2000-01-01 00:00:00",
+                interval_seconds=1,
+                random_delay_min=0,
+                random_delay_max=0,
+                operator_name="tester",
+                report_to="tester",
+                source_mode=SOURCE_MODE_JSON,
+                dataset_type="all",
+                template_preview="hello",
+                total_count=1,
+                task_kind="json",
+                source_json_path=str(json_path),
+                source_json_name=json_path.name,
+                enabled=False,
+            )
+
+            try:
+                with mock.patch.object(window, "execute_scheduled_job") as execute_mock:
+                    window.poll_scheduled_jobs()
+                execute_mock.assert_not_called()
+
+                window.refresh_scheduled_jobs()
+                window.select_scheduled_job(job_id)
+                self.app.processEvents()
+                self.assertEqual(window.schedule_table.item(0, 3).text(), "关闭")
+                with mock.patch("excel_sender_gui.QMessageBox.question", return_value=QMessageBox.Yes), \
+                     mock.patch.object(window, "execute_scheduled_job") as execute_mock:
+                    window.start_sending()
+                execute_mock.assert_called_once()
+                called_job = execute_mock.call_args[0][0]
+                self.assertEqual(called_job.job_id, job_id)
+            finally:
+                window.close()
+
+    def test_toggle_auto_schedule_buttons_update_job_enabled_state(self) -> None:
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp_dir:
+            tmp = Path(tmp_dir)
+            window = self.create_window(tmp)
+            store = window.local_store
+            task_id = store.create_task_snapshot(
+                rows=[{"__target_value": "A", "target_type": "person"}],
+                filter_fields="",
+                filter_pattern="",
+                target_column="target_value",
+                template_text="hello",
+                source_batch_id=None,
+                source_mode="file",
+            )
+            job_id = store.create_scheduled_job(
+                task_id=task_id,
+                scheduled_at="2099-01-01 00:00:00",
+                interval_seconds=1,
+                random_delay_min=0,
+                random_delay_max=0,
+                operator_name="tester",
+                report_to="tester",
+                source_mode="file",
+                dataset_type="all",
+                template_preview="hello",
+                total_count=1,
+            )
+
+            try:
+                window.refresh_scheduled_jobs()
+                window.select_scheduled_job(job_id)
+                self.app.processEvents()
+                self.assertTrue(window.disable_schedule_button.isEnabled())
+                self.assertFalse(window.enable_schedule_button.isEnabled())
+
+                window.disable_selected_scheduled_job()
+                refreshed_job = store.list_scheduled_jobs(limit=10)[0]
+                self.assertEqual(refreshed_job.enabled, 0)
+
+                window.refresh_scheduled_jobs()
+                window.select_scheduled_job(job_id)
+                self.app.processEvents()
+                self.assertTrue(window.enable_schedule_button.isEnabled())
+                self.assertFalse(window.disable_schedule_button.isEnabled())
+
+                window.enable_selected_scheduled_job()
+                refreshed_job = store.list_scheduled_jobs(limit=10)[0]
+                self.assertEqual(refreshed_job.enabled, 1)
+            finally:
                 window.close()
 
 

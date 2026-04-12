@@ -113,6 +113,7 @@ class ScheduledSendJob:
     json_writeback_enabled: int = 0
     schedule_mode: str = SCHEDULE_MODE_ONCE
     schedule_value: str = ""
+    enabled: int = 1
 
     @property
     def dataset_label(self) -> str:
@@ -236,6 +237,7 @@ class LocalContactStore:
                     created_at TEXT NOT NULL,
                     scheduled_at TEXT NOT NULL,
                     status TEXT NOT NULL DEFAULT 'pending',
+                    enabled INTEGER NOT NULL DEFAULT 1,
                     interval_seconds INTEGER NOT NULL DEFAULT 0,
                     random_delay_min INTEGER NOT NULL DEFAULT 30,
                     random_delay_max INTEGER NOT NULL DEFAULT 180,
@@ -310,6 +312,7 @@ class LocalContactStore:
             self._ensure_column(connection, "scheduled_send_jobs", "task_kind", "TEXT NOT NULL DEFAULT ''")
             self._ensure_column(connection, "scheduled_send_jobs", "source_json_path", "TEXT NOT NULL DEFAULT ''")
             self._ensure_column(connection, "scheduled_send_jobs", "source_json_name", "TEXT NOT NULL DEFAULT ''")
+            self._ensure_column(connection, "scheduled_send_jobs", "enabled", "INTEGER NOT NULL DEFAULT 1")
             self._ensure_column(connection, "scheduled_send_jobs", "wait_reason", "TEXT NOT NULL DEFAULT ''")
             self._ensure_column(connection, "scheduled_send_jobs", "conflict_status", "TEXT NOT NULL DEFAULT ''")
             self._ensure_column(connection, "scheduled_send_jobs", "conflict_notified", "INTEGER NOT NULL DEFAULT 0")
@@ -698,6 +701,7 @@ class LocalContactStore:
         json_writeback_enabled: bool = False,
         schedule_mode: str = SCHEDULE_MODE_ONCE,
         schedule_value: str = "",
+        enabled: bool = True,
     ) -> int:
         created_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         normalized_schedule_mode = self.normalize_schedule_mode(schedule_mode)
@@ -709,6 +713,7 @@ class LocalContactStore:
                     created_at,
                     scheduled_at,
                     status,
+                    enabled,
                     interval_seconds,
                     random_delay_min,
                     random_delay_max,
@@ -730,13 +735,14 @@ class LocalContactStore:
                     schedule_mode,
                     schedule_value
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     task_id,
                     created_at,
                     scheduled_at,
                     SCHEDULE_STATUS_PENDING,
+                    1 if enabled else 0,
                     interval_seconds,
                     random_delay_min,
                     random_delay_max,
@@ -765,7 +771,7 @@ class LocalContactStore:
         with self.connect() as connection:
             rows = connection.execute(
                 """
-                SELECT id, task_id, created_at, scheduled_at, status, interval_seconds,
+                SELECT id, task_id, created_at, scheduled_at, status, enabled, interval_seconds,
                        random_delay_min, random_delay_max, operator_name, report_to,
                        source_mode, dataset_type, template_preview, total_count,
                        started_at, completed_at, last_error, result_json,
@@ -792,7 +798,7 @@ class LocalContactStore:
         with self.connect() as connection:
             rows = connection.execute(
                 """
-                SELECT id, task_id, created_at, scheduled_at, status, interval_seconds,
+                SELECT id, task_id, created_at, scheduled_at, status, enabled, interval_seconds,
                        random_delay_min, random_delay_max, operator_name, report_to,
                        source_mode, dataset_type, template_preview, total_count,
                        started_at, completed_at, last_error, result_json,
@@ -800,7 +806,7 @@ class LocalContactStore:
                        conflict_status, conflict_notified, wait_notified_at, log_path,
                        json_writeback_enabled, schedule_mode, schedule_value
                 FROM scheduled_send_jobs
-                WHERE status = ? AND scheduled_at <= ?
+                WHERE status = ? AND enabled = 1 AND scheduled_at <= ?
                 ORDER BY scheduled_at ASC, id ASC
                 LIMIT ?
                 """,
@@ -868,6 +874,26 @@ class LocalContactStore:
                     datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
                     job_id,
                     SCHEDULE_STATUS_PENDING,
+                ),
+            )
+        return cursor.rowcount > 0
+
+    def set_scheduled_job_enabled(self, job_id: int, enabled: bool) -> bool:
+        with self.connect() as connection:
+            cursor = connection.execute(
+                """
+                UPDATE scheduled_send_jobs
+                SET enabled = ?,
+                    conflict_status = '',
+                    wait_reason = '',
+                    conflict_notified = 0,
+                    wait_notified_at = ''
+                WHERE id = ? AND status != ?
+                """,
+                (
+                    1 if enabled else 0,
+                    job_id,
+                    SCHEDULE_STATUS_RUNNING,
                 ),
             )
         return cursor.rowcount > 0
@@ -1266,7 +1292,7 @@ class LocalContactStore:
         with self.connect() as connection:
             rows = connection.execute(
                 """
-                SELECT id, task_id, created_at, scheduled_at, status, interval_seconds,
+                SELECT id, task_id, created_at, scheduled_at, status, enabled, interval_seconds,
                        random_delay_min, random_delay_max, operator_name, report_to,
                        source_mode, dataset_type, template_preview, total_count,
                        started_at, completed_at, last_error, result_json,
@@ -1457,6 +1483,7 @@ class LocalContactStore:
             created_at=str(row["created_at"]),
             scheduled_at=str(row["scheduled_at"]),
             status=str(row["status"]),
+            enabled=int(row["enabled"] or 0),
             interval_seconds=int(row["interval_seconds"]),
             random_delay_min=int(row["random_delay_min"]),
             random_delay_max=int(row["random_delay_max"]),
