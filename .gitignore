@@ -45,6 +45,8 @@ task/
 # AI artifacts
 .agent/
 .claude/
+.codex
+.codex/
 docs/.omx/
 
 # Local captures

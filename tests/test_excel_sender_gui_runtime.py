@@ -73,27 +73,182 @@ class ExcelSenderGuiRuntimeTests(unittest.TestCase):
             finally:
                 window.close()
 
-    def test_window_minimum_size_is_smaller_than_previous_layout(self) -> None:
+    def test_window_minimum_size_targets_compact_redesign_goal(self) -> None:
         with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp_dir:
             tmp = Path(tmp_dir)
             window = self.create_window(tmp)
             try:
-                self.assertEqual(window.minimumWidth(), 760)
-                self.assertEqual(window.minimumHeight(), 540)
+                self.assertEqual(window.minimumWidth(), 1080)
+                self.assertEqual(window.minimumHeight(), 760)
             finally:
                 window.close()
 
-    def test_main_tabs_split_send_prepare_and_task_center(self) -> None:
+    def test_navigation_shell_groups_pages_into_workbench_and_task_views(self) -> None:
         with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp_dir:
             tmp = Path(tmp_dir)
             window = self.create_window(tmp)
             try:
                 tab_texts = [window.main_tabs.tabText(index) for index in range(window.main_tabs.count())]
-                self.assertEqual(tab_texts, ["数据与模板", "本地库数据", "发送准备", "任务中心"])
-                self.assertIs(window.main_tabs.widget(2), window.send_prepare_page)
-                self.assertIs(window.main_tabs.widget(3), window.task_center_page)
+                self.assertEqual(tab_texts, ["工作台", "数据与模板", "本地库数据", "任务工作区"])
+                self.assertFalse(window.main_tabs.tabBar().isVisible())
+                self.assertIs(window.main_tabs.widget(0), window.workbench_page)
+                self.assertIs(window.workbench_stack.currentWidget(), window.basic_page)
+                self.assertEqual([button.text() for button in window.navigation_buttons.values()], ["工作台", "数据与模板", "本地库数据", "任务工作区"])
                 headers = [window.schedule_table.horizontalHeaderItem(index).text() for index in range(window.schedule_table.columnCount())]
                 self.assertEqual(headers, ["队列ID", "计划时间", "执行状态", "自动调度", "人数", "来源", "内容摘要"])
+            finally:
+                window.close()
+
+    def test_old_navigation_entrypoints_route_to_new_shell_sections(self) -> None:
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp_dir:
+            tmp = Path(tmp_dir)
+            window = self.create_window(tmp)
+            try:
+                window.open_send_prepare_page()
+                self.assertIs(window.main_tabs.currentWidget(), window.workbench_page)
+                self.assertIs(window.workbench_stack.currentWidget(), window.send_prepare_page)
+                window.open_task_center_page()
+                self.assertIs(window.main_tabs.currentWidget(), window.task_center_page)
+                window.open_local_store_page()
+                self.assertIs(window.main_tabs.currentWidget(), window.local_store_page)
+            finally:
+                window.close()
+
+    def test_advanced_settings_panel_collapses_and_persists(self) -> None:
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp_dir:
+            tmp = Path(tmp_dir)
+            window = self.create_window(tmp)
+            try:
+                window.open_send_prepare_page()
+                self.assertTrue(window.advanced_settings_panel.isHidden())
+                window.advanced_settings_toggle_button.click()
+                self.assertFalse(window.advanced_settings_panel.isHidden())
+                window.open_task_center_page()
+            finally:
+                window.close()
+
+            reopened = self.create_window(tmp)
+            try:
+                self.assertIs(reopened.main_tabs.currentWidget(), reopened.task_center_page)
+                self.assertTrue(reopened.advanced_settings_toggle_button.isChecked())
+                reopened.open_send_prepare_page()
+                self.assertFalse(reopened.advanced_settings_panel.isHidden())
+            finally:
+                reopened.close()
+
+    def test_theme_mode_persists_after_restart(self) -> None:
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp_dir:
+            tmp = Path(tmp_dir)
+            window = self.create_window(tmp)
+            try:
+                self.assertEqual(window.theme_mode_combo.currentData(), "auto")
+                window.theme_mode_combo.setCurrentIndex(window.theme_mode_combo.findData("dark"))
+                self.assertEqual(window.theme_mode_combo.currentData(), "dark")
+            finally:
+                window.close()
+
+            reopened = self.create_window(tmp)
+            try:
+                self.assertEqual(reopened.theme_mode_combo.currentData(), "dark")
+                self.assertIn("当前主题：", reopened.theme_status_label.text())
+            finally:
+                reopened.close()
+
+    def test_basic_mode_loads_columns_and_inserts_variable_token(self) -> None:
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp_dir:
+            tmp = Path(tmp_dir)
+            excel_path = tmp / "contacts.csv"
+            excel_path.write_text("微信号,姓名,城市\nwx_1,张三,上海\nwx_2,李四,北京\n", encoding="utf-8")
+            window = self.create_window(tmp)
+            try:
+                window.basic_excel_path_input.setText(str(excel_path))
+                with mock.patch("excel_sender_gui.QMessageBox.information"):
+                    self.assertTrue(window.load_basic_excel_data())
+                self.assertEqual(window.basic_variable_combo.count(), 3)
+                self.assertTrue(window.basic_insert_variable_button.isEnabled())
+                window.basic_variable_combo.setCurrentIndex(window.basic_variable_combo.findData("姓名"))
+                window.insert_basic_variable()
+                self.assertIn("{{姓名}}", window.basic_message_input.toPlainText())
+            finally:
+                window.close()
+
+    def test_basic_mode_batches_remaining_targets_without_restarting_from_head(self) -> None:
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp_dir:
+            tmp = Path(tmp_dir)
+            window = self.create_window(tmp)
+            store = window.local_store
+            try:
+                window.basic_selected_records = [
+                    {"微信号": "wx_1", "显示名称": "张三", "__target_value": "wx_1"},
+                    {"微信号": "wx_2", "显示名称": "李四", "__target_value": "wx_2"},
+                    {"微信号": "wx_3", "显示名称": "王五", "__target_value": "wx_3"},
+                ]
+                window.basic_message_input.setPlainText("您好")
+                window.basic_batch_limit_spin.setValue(2)
+                task_id = window.ensure_basic_task_snapshot()
+                records = window.get_basic_pending_records(task_id)
+                self.assertEqual([row["__target_value"] for row in records], ["wx_1", "wx_2", "wx_3"])
+
+                task_rows = store.load_task_records(task_id)
+                for row in task_rows[:2]:
+                    store.update_task_item_result(
+                        int(row["__task_item_id"]),
+                        send_status="success",
+                        send_time="2026-04-16 12:00:00",
+                        error_msg="",
+                        attachment_status="none",
+                        attachments=None,
+                        attachment_details=[],
+                        raw_updates={"send_status": "success"},
+                    )
+
+                remaining = window.get_basic_pending_records(task_id)
+                self.assertEqual([row["__target_value"] for row in remaining], ["wx_3"])
+                window.update_basic_progress_status()
+                self.assertIn("剩余 1 人", window.basic_progress_label.text())
+            finally:
+                window.close()
+
+    def test_basic_mode_sections_support_manual_collapse(self) -> None:
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp_dir:
+            tmp = Path(tmp_dir)
+            window = self.create_window(tmp)
+            try:
+                for section_key in ("import", "receiver", "message", "attachment", "send"):
+                    self.assertIn(section_key, window.basic_section_toggle_buttons)
+                    self.assertIn(section_key, window.basic_section_content_widgets)
+                    self.assertFalse(window.basic_section_content_widgets[section_key].isHidden())
+                window.basic_section_toggle_buttons["attachment"].click()
+                self.assertTrue(window.basic_section_content_widgets["attachment"].isHidden())
+                self.assertEqual(window.basic_section_toggle_buttons["attachment"].text(), "展开")
+                window.basic_section_toggle_buttons["attachment"].click()
+                self.assertFalse(window.basic_section_content_widgets["attachment"].isHidden())
+                self.assertEqual(window.basic_section_toggle_buttons["attachment"].text(), "收起")
+            finally:
+                window.close()
+
+    def test_basic_mode_collapse_releases_space_to_visible_sections(self) -> None:
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp_dir:
+            tmp = Path(tmp_dir)
+            window = self.create_window(tmp)
+            try:
+                window.show()
+                window.resize(1280, 860)
+                self.app.processEvents()
+
+                receiver_height_before = window.basic_receiver_group.height()
+                attachment_y_before = window.basic_attachment_group.y()
+                send_y_before = window.basic_send_group.y()
+                right_panel_height_before = window.basic_right_layout.parentWidget().height()
+
+                window.basic_section_toggle_buttons["receiver"].click()
+                self.app.processEvents()
+
+                self.assertTrue(window.basic_section_content_widgets["receiver"].isHidden())
+                self.assertLess(window.basic_receiver_group.height(), receiver_height_before)
+                self.assertLess(window.basic_attachment_group.y(), attachment_y_before)
+                self.assertLess(window.basic_send_group.y(), send_y_before)
+                self.assertLess(window.basic_right_layout.parentWidget().height(), right_panel_height_before)
             finally:
                 window.close()
 
@@ -165,6 +320,11 @@ class ExcelSenderGuiRuntimeTests(unittest.TestCase):
             tmp = Path(tmp_dir)
             window = self.create_window(tmp)
             try:
+                window.open_send_prepare_page()
+                window.show()
+                self.app.processEvents()
+                window.apply_table_header_font(window.preview_table)
+                self.app.processEvents()
                 header_font = window.preview_table.horizontalHeader().font()
                 self.assertGreaterEqual(header_font.pointSize(), window.font().pointSize())
             finally:

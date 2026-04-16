@@ -30,12 +30,15 @@ from PyQt5.QtWidgets import (
     QPlainTextEdit,
     QPushButton,
     QRadioButton,
+    QScrollArea,
     QSizePolicy,
     QSpinBox,
+    QStackedWidget,
     QSplitter,
     QTabWidget,
     QTableWidget,
     QTableWidgetItem,
+    QToolButton,
     QVBoxLayout,
     QWidget,
 )
@@ -99,6 +102,115 @@ JSON_TIME_FORMAT = "%Y-%m-%d %H:%M:%S"
 PRIMARY_UI_FONT_SIZE = 12
 HELPER_UI_FONT_SIZE = 11
 TERMINAL_SEND_STATUSES = {"success", "failed", "partial_success", "skipped"}
+THEME_MODE_AUTO = "auto"
+THEME_MODE_LIGHT = "light"
+THEME_MODE_DARK = "dark"
+AUTO_THEME_DARK_START_HOUR = 18
+AUTO_THEME_LIGHT_START_HOUR = 7
+PAGE_KEY_WORKBENCH = "workbench"
+PAGE_KEY_DATA_TEMPLATE = "data_template"
+PAGE_KEY_LOCAL_STORE = "local_store"
+PAGE_KEY_TASK_CENTER = "task_center"
+WORKBENCH_VIEW_BASIC = "basic"
+WORKBENCH_VIEW_SEND = "send_prepare"
+BASIC_SEND_STATUS_TEXT = {
+    "": "待发送",
+    "pending": "待发送",
+    "success": "已发送",
+    "failed": "失败",
+    "partial_success": "部分成功",
+    "skipped": "已跳过",
+}
+SEMANTIC_COLOR_MAP = {
+    "#555": "muted",
+    "#027a48": "success",
+    "#b54708": "warning",
+    "#b42318": "danger",
+    "#1f2937": "title",
+    "#111827": "title",
+}
+THEME_PALETTES: dict[str, dict[str, str]] = {
+    THEME_MODE_LIGHT: {
+        "window_bg": "#f3f6fb",
+        "panel_bg": "#ffffff",
+        "panel_alt_bg": "#eef4ff",
+        "text_primary": "#101828",
+        "text_secondary": "#475467",
+        "text_muted": "#667085",
+        "text_inverse": "#ffffff",
+        "border": "#d0d5dd",
+        "border_strong": "#98a2b3",
+        "separator": "#e4e7ec",
+        "input_bg": "#ffffff",
+        "input_border": "#cbd5e1",
+        "tab_bg": "#e8eefb",
+        "tab_active_bg": "#ffffff",
+        "tab_active_border": "#3b82f6",
+        "primary": "#1677ff",
+        "primary_hover": "#0f5fd6",
+        "primary_soft": "#dbeafe",
+        "danger_bg": "#fff1f0",
+        "danger_text": "#b42318",
+        "danger_border": "#f2b8b5",
+        "secondary_bg": "#f8fafc",
+        "secondary_text": "#1f2937",
+        "secondary_border": "#d0d5dd",
+        "neutral_bg": "#eef2ff",
+        "neutral_text": "#1d4ed8",
+        "neutral_border": "#c7d2fe",
+        "success": "#027a48",
+        "warning": "#b54708",
+        "danger": "#b42318",
+        "badge_bg": "#f8fafc",
+        "badge_border": "#d0d5dd",
+        "table_header_bg": "#eef2f7",
+        "table_row_alt": "#f8fafc",
+        "selection_bg": "#1677ff",
+        "selection_text": "#ffffff",
+        "disabled_bg": "#dbe5f0",
+        "disabled_text": "#98a2b3",
+    },
+    THEME_MODE_DARK: {
+        "window_bg": "#0f172a",
+        "panel_bg": "#111827",
+        "panel_alt_bg": "#172554",
+        "text_primary": "#f8fafc",
+        "text_secondary": "#cbd5e1",
+        "text_muted": "#94a3b8",
+        "text_inverse": "#ffffff",
+        "border": "#334155",
+        "border_strong": "#475569",
+        "separator": "#1e293b",
+        "input_bg": "#0b1220",
+        "input_border": "#334155",
+        "tab_bg": "#162033",
+        "tab_active_bg": "#111827",
+        "tab_active_border": "#3b82f6",
+        "primary": "#3b82f6",
+        "primary_hover": "#2563eb",
+        "primary_soft": "#1d4ed8",
+        "danger_bg": "#3a1b1b",
+        "danger_text": "#fca5a5",
+        "danger_border": "#7f1d1d",
+        "secondary_bg": "#1f2937",
+        "secondary_text": "#e5e7eb",
+        "secondary_border": "#334155",
+        "neutral_bg": "#1e293b",
+        "neutral_text": "#bfdbfe",
+        "neutral_border": "#3b82f6",
+        "success": "#32d583",
+        "warning": "#fdb022",
+        "danger": "#f97066",
+        "badge_bg": "#17212f",
+        "badge_border": "#334155",
+        "table_header_bg": "#162033",
+        "table_row_alt": "#0c1424",
+        "selection_bg": "#3b82f6",
+        "selection_text": "#ffffff",
+        "disabled_bg": "#1e293b",
+        "disabled_text": "#64748b",
+    },
+}
 
 
 class ExcelSenderGUI(QWidget):
@@ -134,21 +246,43 @@ class ExcelSenderGUI(QWidget):
         self.current_runtime_source_json_path = ""
         self.current_runtime_log_path = ""
         self.last_runtime_summary: dict[str, Any] = {}
+        self.basic_source_records: list[dict[str, str]] = []
+        self.basic_columns: list[str] = []
+        self.basic_selected_records: list[dict[str, str]] = []
+        self.basic_attachments: list[dict[str, str]] = []
+        self.basic_task_id: int | None = None
+        self.basic_match_keyword = ""
+        self.basic_last_match_total = 0
+        self.basic_last_duplicate_removed = 0
+        self.basic_last_loaded_path = ""
+        self.current_send_origin = "classic"
+        self.current_send_batch_limit: int | None = None
+        self.current_send_remaining_before_start = 0
         self._compact_ui_mode = False
         self._startup_layout_refreshed = False
         self._updating_preview_table = False
         self._is_restoring_state = False
+        self.basic_section_groups: dict[str, QGroupBox] = {}
+        self.basic_section_toggle_buttons: dict[str, QToolButton] = {}
+        self.basic_section_content_widgets: dict[str, QWidget] = {}
+        self._theme_mode = str(self.config.get("settings", {}).get("theme_mode") or THEME_MODE_AUTO)
+        self._resolved_theme = THEME_MODE_LIGHT
+        self._theme_tokens = dict(THEME_PALETTES[THEME_MODE_LIGHT])
         self.template_change_timer = QTimer(self)
         self.template_change_timer.setSingleShot(True)
         self.template_change_timer.timeout.connect(self.apply_template_changes)
         self.scheduler_timer = QTimer(self)
         self.scheduler_timer.setInterval(5000)
         self.scheduler_timer.timeout.connect(self.poll_scheduled_jobs)
+        self.theme_timer = QTimer(self)
+        self.theme_timer.setInterval(60_000)
+        self.theme_timer.timeout.connect(self.on_theme_timer_timeout)
 
         self.init_ui()
         self.restore_initial_state()
         if start_scheduler:
             self.scheduler_timer.start()
+        self.theme_timer.start()
 
     def load_config(self) -> dict:
         if os.path.exists(self.config_path):
@@ -164,6 +298,9 @@ class ExcelSenderGUI(QWidget):
             changed = True
         if "send_interval" not in settings:
             settings["send_interval"] = 1
+            changed = True
+        if "theme_mode" not in settings:
+            settings["theme_mode"] = THEME_MODE_AUTO
             changed = True
 
         excel_config = config.setdefault("excel", {})
@@ -244,6 +381,31 @@ class ExcelSenderGUI(QWidget):
             json_task_config["last_attachment_dir"] = ""
             changed = True
 
+        basic_mode_config = config.setdefault("basic_mode", {})
+        if "message_text" not in basic_mode_config:
+            basic_mode_config["message_text"] = ""
+            changed = True
+        if "attachments" not in basic_mode_config:
+            basic_mode_config["attachments"] = []
+            changed = True
+        if "match_keyword" not in basic_mode_config:
+            basic_mode_config["match_keyword"] = ""
+            changed = True
+        if "batch_limit" not in basic_mode_config:
+            basic_mode_config["batch_limit"] = 50
+            changed = True
+
+        ui_config = config.setdefault("ui", {})
+        if "nav_page" not in ui_config:
+            ui_config["nav_page"] = PAGE_KEY_WORKBENCH
+            changed = True
+        if "workbench_view" not in ui_config:
+            ui_config["workbench_view"] = WORKBENCH_VIEW_BASIC
+            changed = True
+        if "advanced_settings_expanded" not in ui_config:
+            ui_config["advanced_settings_expanded"] = False
+            changed = True
+
         if changed:
             try:
                 with open(self.config_path, "w", encoding="utf-8") as file:
@@ -266,89 +428,50 @@ class ExcelSenderGUI(QWidget):
         self.save_config()
 
     def init_ui(self) -> None:
-        self.setWindowTitle("EasyChat Excel 个性化群发")
+        self.setWindowTitle("EasyChat 精准群发")
         self.setWindowFlag(Qt.WindowMinimizeButtonHint, True)
         self.setWindowFlag(Qt.WindowMaximizeButtonHint, True)
-        self.resize(1344, 860)
-        self.setMinimumSize(760, 540)
+        self.resize(1260, 840)
+        self.setMinimumSize(1080, 760)
         self.apply_font_scaling()
 
         root_layout = QVBoxLayout(self)
-        root_layout.setContentsMargins(18, 18, 18, 18)
-        root_layout.setSpacing(12)
+        root_layout.setContentsMargins(12, 12, 12, 12)
+        root_layout.setSpacing(10)
+        root_layout.addWidget(self.build_window_toolbar())
 
-        self.main_tabs = QTabWidget(self)
-        self.main_tabs.setDocumentMode(True)
-        self.main_tabs.tabBar().setExpanding(True)
+        self.basic_page = self.build_basic_page()
         self.data_template_page = self.build_data_template_page()
         self.local_store_page = self.build_local_store_page()
         self.send_prepare_page = self.build_send_prepare_page()
         self.task_center_page = self.build_task_center_page()
+        self.workbench_page = self.build_workbench_page()
+
+        self.main_tabs = QTabWidget(self)
+        self.main_tabs.setDocumentMode(True)
+        self.main_tabs.tabBar().hide()
+        self.main_tabs.addTab(self.workbench_page, "工作台")
         self.main_tabs.addTab(self.data_template_page, "数据与模板")
         self.main_tabs.addTab(self.local_store_page, "本地库数据")
-        self.main_tabs.addTab(self.send_prepare_page, "发送准备")
-        self.main_tabs.addTab(self.task_center_page, "任务中心")
+        self.main_tabs.addTab(self.task_center_page, "任务工作区")
 
-        root_layout.addWidget(self.main_tabs)
+        body_layout = QHBoxLayout()
+        body_layout.setSpacing(12)
+        self.navigation_panel = self.build_navigation_panel()
+        body_layout.addWidget(self.navigation_panel)
+        body_layout.addWidget(self.main_tabs, stretch=1)
+        root_layout.addLayout(body_layout, stretch=1)
+        self.apply_theme()
         self.update_compact_ui_mode()
+        self.navigate_to(PAGE_KEY_WORKBENCH, WORKBENCH_VIEW_BASIC, persist=False)
 
     def apply_font_scaling(self) -> None:
         base_font = QFont(self.font())
         base_font.setPointSize(PRIMARY_UI_FONT_SIZE)
+        app = QApplication.instance()
+        if app is not None:
+            app.setFont(base_font)
         self.setFont(base_font)
-
-        self.setStyleSheet(
-            """
-            QTabBar::tab {
-                min-height: 40px;
-                padding: 6px 18px;
-            }
-            QPushButton {
-                font-size: 12pt;
-                font-weight: 500;
-                min-height: 38px;
-                padding: 4px 12px;
-            }
-            QPushButton[role="primary"] {
-                background-color: #1677ff;
-                color: white;
-                border: 1px solid #1677ff;
-                border-radius: 6px;
-                font-weight: 600;
-            }
-            QPushButton[role="primary"]:disabled {
-                background-color: #bdd3ff;
-                color: #f8fbff;
-                border: 1px solid #bdd3ff;
-            }
-            QPushButton[role="danger"] {
-                background-color: #fff1f0;
-                color: #b42318;
-                border: 1px solid #f2b8b5;
-                border-radius: 6px;
-            }
-            QPushButton[role="secondary"] {
-                background-color: #f8fafc;
-                color: #1f2937;
-                border: 1px solid #d0d5dd;
-                border-radius: 6px;
-            }
-            QPushButton[role="neutral"] {
-                background-color: #eef2ff;
-                color: #1d4ed8;
-                border: 1px solid #c7d2fe;
-                border-radius: 6px;
-            }
-            QSpinBox,
-            QLineEdit,
-            QDateTimeEdit {
-                min-height: 34px;
-            }
-            QGroupBox {
-                font-weight: 600;
-            }
-            """
-        )
 
     def build_helper_font(self, point_size: int = HELPER_UI_FONT_SIZE) -> QFont:
         helper_font = QFont(self.font())
@@ -364,8 +487,9 @@ class ExcelSenderGUI(QWidget):
     ) -> QLabel:
         label.setWordWrap(True)
         label.setFont(self.build_helper_font(point_size))
-        if color:
-            label.setStyleSheet(f"color:{color};")
+        label.setProperty("themeStyleRole", "helper")
+        label.setProperty("themeTone", self.resolve_semantic_tone(color))
+        self.apply_semantic_widget_style(label)
         return label
 
     def build_emphasis_font(self, point_size: int = PRIMARY_UI_FONT_SIZE, *, bold: bool = True) -> QFont:
@@ -376,13 +500,17 @@ class ExcelSenderGUI(QWidget):
 
     def style_section_title_label(self, label: QLabel) -> QLabel:
         label.setFont(self.build_emphasis_font(point_size=12, bold=True))
-        label.setStyleSheet("color:#1f2937;")
+        label.setProperty("themeStyleRole", "section-title")
+        label.setProperty("themeTone", "title")
+        self.apply_semantic_widget_style(label)
         return label
 
     def style_overview_label(self, label: QLabel) -> QLabel:
         label.setWordWrap(True)
         label.setFont(self.build_emphasis_font(point_size=12, bold=True))
-        label.setStyleSheet("color:#111827;")
+        label.setProperty("themeStyleRole", "overview")
+        label.setProperty("themeTone", "title")
+        self.apply_semantic_widget_style(label)
         return label
 
     def style_status_badge(self, label: QLabel) -> QLabel:
@@ -390,13 +518,9 @@ class ExcelSenderGUI(QWidget):
         label.setMinimumWidth(72)
         label.setMinimumHeight(40)
         label.setFont(self.build_helper_font())
-        label.setStyleSheet(
-            "color:#1f2937;"
-            "background:#f8fafc;"
-            "border:1px solid #d0d5dd;"
-            "border-radius:8px;"
-            "padding:6px 12px;"
-        )
+        label.setProperty("themeStyleRole", "status-badge")
+        label.setProperty("themeTone", "default")
+        self.apply_semantic_widget_style(label)
         return label
 
     def set_button_role(self, button: QPushButton, role: str, *, min_width: int = 0, min_height: int = 0) -> QPushButton:
@@ -415,8 +539,542 @@ class ExcelSenderGUI(QWidget):
         line = QFrame(self)
         line.setFrameShape(QFrame.HLine)
         line.setFrameShadow(QFrame.Sunken)
-        line.setStyleSheet("color:#e5e7eb;")
+        line.setProperty("themeStyleRole", "separator")
+        self.apply_semantic_widget_style(line)
         return line
+
+    def resolve_semantic_tone(self, color: str | None) -> str:
+        if not color:
+            return "default"
+        return SEMANTIC_COLOR_MAP.get(str(color).strip().lower(), "muted")
+
+    def set_label_tone(self, label: QLabel, tone: str) -> None:
+        label.setProperty("themeTone", tone)
+        self.apply_semantic_widget_style(label)
+
+    def apply_semantic_widget_style(self, widget: QWidget) -> None:
+        role = str(widget.property("themeStyleRole") or "")
+        tone = str(widget.property("themeTone") or "default")
+        tokens = self._theme_tokens
+        if role == "helper":
+            color = {
+                "muted": tokens["text_muted"],
+                "success": tokens["success"],
+                "warning": tokens["warning"],
+                "danger": tokens["danger"],
+                "title": tokens["text_primary"],
+                "default": tokens["text_secondary"],
+            }.get(tone, tokens["text_secondary"])
+            widget.setStyleSheet(f"color:{color}; background: transparent;")
+            return
+        if role == "section-title":
+            widget.setStyleSheet(f"color:{tokens['text_primary']}; background: transparent;")
+            return
+        if role == "overview":
+            widget.setStyleSheet(f"color:{tokens['text_primary']}; background: transparent;")
+            return
+        if role == "status-badge":
+            widget.setStyleSheet(
+                f"color:{tokens['text_primary']};"
+                f"background:{tokens['badge_bg']};"
+                f"border:1px solid {tokens['badge_border']};"
+                "border-radius:8px;"
+                "padding:6px 12px;"
+            )
+            return
+        if role == "separator":
+            widget.setStyleSheet(f"color:{tokens['separator']}; background:{tokens['separator']};")
+            return
+
+    def apply_table_header_font(self, table: QTableWidget | None) -> None:
+        if table is None:
+            return
+        header = table.horizontalHeader()
+        header_font = QFont(self.font())
+        header_font.setPointSize(max(self.font().pointSize(), 12))
+        header_font.setBold(True)
+        header.setFont(header_font)
+        header.style().unpolish(header)
+        header.style().polish(header)
+        header.update()
+
+    def resolve_theme_mode(self) -> str:
+        mode = str(self._theme_mode or THEME_MODE_AUTO).strip().lower()
+        if mode not in {THEME_MODE_AUTO, THEME_MODE_LIGHT, THEME_MODE_DARK}:
+            mode = THEME_MODE_AUTO
+        if mode == THEME_MODE_LIGHT:
+            return THEME_MODE_LIGHT
+        if mode == THEME_MODE_DARK:
+            return THEME_MODE_DARK
+        hour = datetime.now().hour
+        if hour >= AUTO_THEME_DARK_START_HOUR or hour < AUTO_THEME_LIGHT_START_HOUR:
+            return THEME_MODE_DARK
+        return THEME_MODE_LIGHT
+
+    def build_app_stylesheet(self, tokens: dict[str, str]) -> str:
+        return f"""
+            QWidget {{
+                background-color: {tokens['window_bg']};
+                color: {tokens['text_primary']};
+            }}
+            QWidget#navigationPanel {{
+                background-color: {tokens['panel_bg']};
+                border: 1px solid {tokens['border']};
+                border-radius: 14px;
+            }}
+            QWidget#windowToolbar {{
+                background-color: {tokens['panel_bg']};
+                border: 1px solid {tokens['border']};
+                border-radius: 14px;
+            }}
+            QLabel#windowTitle {{
+                color: {tokens['text_primary']};
+                font-size: 16pt;
+                font-weight: 700;
+            }}
+            QLabel#windowSubtitle {{
+                color: {tokens['text_muted']};
+                font-size: 11pt;
+            }}
+            QTabWidget::pane {{
+                border: 1px solid {tokens['border']};
+                background: {tokens['panel_bg']};
+                border-radius: 14px;
+                top: -1px;
+            }}
+            QTabBar::tab {{
+                background: {tokens['tab_bg']};
+                color: {tokens['text_secondary']};
+                min-height: 40px;
+                padding: 6px 18px;
+                border: 1px solid {tokens['border']};
+                border-bottom: none;
+                border-top-left-radius: 10px;
+                border-top-right-radius: 10px;
+                margin-right: 4px;
+            }}
+            QTabBar::tab:selected {{
+                background: {tokens['tab_active_bg']};
+                color: {tokens['text_primary']};
+                border-color: {tokens['tab_active_border']};
+            }}
+            QPushButton {{
+                font-size: 12pt;
+                font-weight: 500;
+                min-height: 38px;
+                padding: 4px 12px;
+                border-radius: 10px;
+                border: 1px solid {tokens['secondary_border']};
+                background: {tokens['secondary_bg']};
+                color: {tokens['secondary_text']};
+            }}
+            QPushButton:hover {{
+                border-color: {tokens['border_strong']};
+            }}
+            QPushButton:disabled {{
+                background: {tokens['disabled_bg']};
+                color: {tokens['disabled_text']};
+                border-color: {tokens['disabled_bg']};
+            }}
+            QPushButton[role="primary"] {{
+                background-color: {tokens['primary']};
+                color: {tokens['text_inverse']};
+                border: 1px solid {tokens['primary']};
+                font-weight: 600;
+            }}
+            QPushButton[role="primary"]:hover {{
+                background-color: {tokens['primary_hover']};
+                border-color: {tokens['primary_hover']};
+            }}
+            QPushButton[role="danger"] {{
+                background-color: {tokens['danger_bg']};
+                color: {tokens['danger_text']};
+                border: 1px solid {tokens['danger_border']};
+            }}
+            QPushButton[role="secondary"] {{
+                background-color: {tokens['secondary_bg']};
+                color: {tokens['secondary_text']};
+                border: 1px solid {tokens['secondary_border']};
+            }}
+            QPushButton[role="neutral"] {{
+                background-color: {tokens['neutral_bg']};
+                color: {tokens['neutral_text']};
+                border: 1px solid {tokens['neutral_border']};
+            }}
+            QPushButton[role="nav"] {{
+                background-color: transparent;
+                color: {tokens['text_secondary']};
+                border: 1px solid transparent;
+                text-align: left;
+                padding: 8px 12px;
+                font-weight: 600;
+            }}
+            QPushButton[role="nav"]:hover {{
+                background-color: {tokens['tab_bg']};
+                border-color: {tokens['border']};
+            }}
+            QPushButton[role="nav"]:checked {{
+                background-color: {tokens['tab_active_bg']};
+                color: {tokens['text_primary']};
+                border-color: {tokens['tab_active_border']};
+            }}
+            QPushButton[role="subnav"] {{
+                background-color: {tokens['secondary_bg']};
+                color: {tokens['secondary_text']};
+                border: 1px solid {tokens['secondary_border']};
+                min-height: 34px;
+                padding: 4px 10px;
+            }}
+            QPushButton[role="subnav"]:checked {{
+                background-color: {tokens['primary']};
+                color: {tokens['text_inverse']};
+                border-color: {tokens['primary']};
+            }}
+            QSpinBox, QLineEdit, QDateTimeEdit, QComboBox, QPlainTextEdit, QTableWidget {{
+                min-height: 34px;
+                background: {tokens['input_bg']};
+                color: {tokens['text_primary']};
+                border: 1px solid {tokens['input_border']};
+                border-radius: 10px;
+                selection-background-color: {tokens['selection_bg']};
+                selection-color: {tokens['selection_text']};
+            }}
+            QComboBox QAbstractItemView {{
+                background: {tokens['panel_bg']};
+                color: {tokens['text_primary']};
+                selection-background-color: {tokens['selection_bg']};
+                selection-color: {tokens['selection_text']};
+                border: 1px solid {tokens['input_border']};
+            }}
+            QGroupBox {{
+                font-weight: 600;
+                border: 1px solid {tokens['border']};
+                border-radius: 14px;
+                margin-top: 12px;
+                padding: 12px;
+                background: {tokens['panel_bg']};
+            }}
+            QGroupBox::title {{
+                subcontrol-origin: margin;
+                left: 14px;
+                padding: 0 6px;
+                color: {tokens['text_primary']};
+                background: {tokens['panel_bg']};
+            }}
+            QHeaderView::section {{
+                background: {tokens['table_header_bg']};
+                color: {tokens['text_secondary']};
+                padding: 8px;
+                border: none;
+                border-bottom: 1px solid {tokens['border']};
+                font-weight: 600;
+            }}
+            QTableWidget {{
+                gridline-color: {tokens['separator']};
+                alternate-background-color: {tokens['table_row_alt']};
+            }}
+            QScrollArea {{
+                border: none;
+                background: transparent;
+            }}
+            QCheckBox, QRadioButton {{
+                color: {tokens['text_primary']};
+            }}
+            QMessageBox {{
+                background: {tokens['panel_bg']};
+            }}
+        """
+
+    def build_navigation_panel(self) -> QWidget:
+        container = QWidget(self)
+        container.setObjectName("navigationPanel")
+        container.setMinimumWidth(168)
+        container.setMaximumWidth(196)
+        layout = QVBoxLayout(container)
+        layout.setContentsMargins(12, 12, 12, 12)
+        layout.setSpacing(8)
+
+        title = QLabel("导航", container)
+        self.style_section_title_label(title)
+        layout.addWidget(title)
+
+        self.navigation_button_group = QButtonGroup(self)
+        self.navigation_button_group.setExclusive(True)
+        self.navigation_buttons: dict[str, QPushButton] = {}
+        for page_key, label in (
+            (PAGE_KEY_WORKBENCH, "工作台"),
+            (PAGE_KEY_DATA_TEMPLATE, "数据与模板"),
+            (PAGE_KEY_LOCAL_STORE, "本地库数据"),
+            (PAGE_KEY_TASK_CENTER, "任务工作区"),
+        ):
+            button = QPushButton(label, container)
+            button.setCheckable(True)
+            button.setProperty("role", "nav")
+            button.clicked.connect(lambda _checked=False, key=page_key: self.navigate_to(key))
+            self.navigation_button_group.addButton(button)
+            self.navigation_buttons[page_key] = button
+            layout.addWidget(button)
+
+        layout.addStretch(1)
+        return container
+
+    def build_workbench_page(self) -> QWidget:
+        page = QWidget(self)
+        layout = QVBoxLayout(page)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(10)
+
+        header_row = QHBoxLayout()
+        header_row.setSpacing(8)
+        title = QLabel("工作台")
+        self.style_section_title_label(title)
+        header_row.addWidget(title)
+        header_row.addSpacing(8)
+
+        self.workbench_button_group = QButtonGroup(self)
+        self.workbench_button_group.setExclusive(True)
+        self.workbench_buttons: dict[str, QPushButton] = {}
+        for view_key, text in (
+            (WORKBENCH_VIEW_BASIC, "快速发送"),
+            (WORKBENCH_VIEW_SEND, "发送准备"),
+        ):
+            button = QPushButton(text, page)
+            button.setCheckable(True)
+            button.setProperty("role", "subnav")
+            button.clicked.connect(lambda _checked=False, key=view_key: self.set_workbench_view(key))
+            self.workbench_button_group.addButton(button)
+            self.workbench_buttons[view_key] = button
+            header_row.addWidget(button)
+        header_row.addStretch(1)
+        layout.addLayout(header_row)
+
+        self.workbench_stack = QStackedWidget(page)
+        self.workbench_stack.addWidget(self.basic_page)
+        self.workbench_stack.addWidget(self.send_prepare_page)
+        layout.addWidget(self.workbench_stack, stretch=1)
+        return page
+
+    def build_scroll_area(self, content: QWidget) -> QScrollArea:
+        scroll_area = QScrollArea(self)
+        scroll_area.setWidgetResizable(True)
+        scroll_area.setFrameShape(QFrame.NoFrame)
+        scroll_area.setWidget(content)
+        return scroll_area
+
+    def init_basic_collapsible_group(self, group: QGroupBox, section_key: str) -> QVBoxLayout:
+        layout = QVBoxLayout(group)
+        layout.setSpacing(8)
+
+        header_row = QHBoxLayout()
+        header_row.addStretch(1)
+
+        toggle_button = QToolButton(group)
+        toggle_button.setCheckable(True)
+        toggle_button.setChecked(True)
+        toggle_button.setToolButtonStyle(Qt.ToolButtonTextBesideIcon)
+        toggle_button.toggled.connect(lambda checked, key=section_key: self.set_basic_section_expanded(key, checked))
+        header_row.addWidget(toggle_button)
+        layout.addLayout(header_row)
+
+        content_widget = QWidget(group)
+        content_layout = QVBoxLayout(content_widget)
+        content_layout.setContentsMargins(0, 0, 0, 0)
+        content_layout.setSpacing(10)
+        layout.addWidget(content_widget)
+
+        self.basic_section_groups[section_key] = group
+        self.basic_section_toggle_buttons[section_key] = toggle_button
+        self.basic_section_content_widgets[section_key] = content_widget
+        self.apply_basic_section_state(section_key, True)
+        return content_layout
+
+    def apply_basic_section_state(self, section_key: str, expanded: bool) -> None:
+        toggle_button = self.basic_section_toggle_buttons.get(section_key)
+        if toggle_button is not None:
+            toggle_button.blockSignals(True)
+            toggle_button.setChecked(expanded)
+            toggle_button.blockSignals(False)
+            toggle_button.setText("收起" if expanded else "展开")
+            toggle_button.setArrowType(Qt.DownArrow if expanded else Qt.RightArrow)
+        content_widget = self.basic_section_content_widgets.get(section_key)
+        if content_widget is not None:
+            content_widget.setVisible(expanded)
+
+    def set_basic_section_expanded(self, section_key: str, expanded: bool) -> None:
+        self.apply_basic_section_state(section_key, expanded)
+        self.refresh_basic_section_layout()
+
+    def refresh_basic_section_layout(self) -> None:
+        if not hasattr(self, "basic_left_layout") or not hasattr(self, "basic_right_layout"):
+            return
+        self.apply_basic_column_stretch(
+            self.basic_left_layout,
+            [
+                ("import", getattr(self, "basic_import_group", None), 0),
+                ("message", getattr(self, "basic_message_group", None), 2),
+            ],
+            getattr(self, "basic_left_spacer_index", -1),
+        )
+        self.apply_basic_column_stretch(
+            self.basic_right_layout,
+            [
+                ("receiver", getattr(self, "basic_receiver_group", None), 3),
+                ("attachment", getattr(self, "basic_attachment_group", None), 2),
+                ("send", getattr(self, "basic_send_group", None), 0),
+            ],
+            getattr(self, "basic_right_spacer_index", -1),
+        )
+
+        for section_key in ("import", "message", "receiver", "attachment", "send"):
+            group = self.basic_section_groups.get(section_key)
+            if group is not None:
+                group.updateGeometry()
+        if hasattr(self, "basic_page"):
+            self.basic_page.updateGeometry()
+            self.basic_page.adjustSize()
+
+    def apply_basic_column_stretch(
+        self,
+        layout: QVBoxLayout,
+        sections: list[tuple[str, QGroupBox | None, int]],
+        spacer_index: int,
+    ) -> None:
+        has_expandable_visible_section = False
+        for index, (section_key, group, expanded_stretch) in enumerate(sections):
+            if group is None:
+                continue
+            content_widget = self.basic_section_content_widgets.get(section_key)
+            expanded = content_widget is None or not content_widget.isHidden()
+            stretch = expanded_stretch if expanded else 0
+            layout.setStretch(index, stretch)
+            if stretch > 0:
+                has_expandable_visible_section = True
+        if spacer_index >= 0:
+            layout.setStretch(spacer_index, 0 if has_expandable_visible_section else 1)
+
+    def navigate_to(self, page_key: str, workbench_view: str | None = None, *, persist: bool = True) -> None:
+        page_map = {
+            PAGE_KEY_WORKBENCH: self.workbench_page,
+            PAGE_KEY_DATA_TEMPLATE: self.data_template_page,
+            PAGE_KEY_LOCAL_STORE: self.local_store_page,
+            PAGE_KEY_TASK_CENTER: self.task_center_page,
+        }
+        resolved_key = page_key if page_key in page_map else PAGE_KEY_WORKBENCH
+        self.main_tabs.setCurrentWidget(page_map[resolved_key])
+        if resolved_key == PAGE_KEY_WORKBENCH:
+            self.set_workbench_view(workbench_view or WORKBENCH_VIEW_BASIC, persist=persist)
+        elif resolved_key == PAGE_KEY_TASK_CENTER and hasattr(self, "schedule_table"):
+            self.apply_table_header_font(self.schedule_table)
+        self.sync_navigation_buttons(resolved_key)
+        if persist:
+            self.config["ui"]["nav_page"] = resolved_key
+            self.save_config_if_ready()
+
+    def sync_navigation_buttons(self, page_key: str) -> None:
+        for key, button in getattr(self, "navigation_buttons", {}).items():
+            button.blockSignals(True)
+            button.setChecked(key == page_key)
+            button.blockSignals(False)
+
+    def set_workbench_view(self, view_key: str, *, persist: bool = True) -> None:
+        resolved_view = view_key if view_key in {WORKBENCH_VIEW_BASIC, WORKBENCH_VIEW_SEND} else WORKBENCH_VIEW_BASIC
+        if hasattr(self, "workbench_stack"):
+            self.workbench_stack.setCurrentWidget(
+                self.basic_page if resolved_view == WORKBENCH_VIEW_BASIC else self.send_prepare_page
+            )
+        if resolved_view == WORKBENCH_VIEW_SEND and hasattr(self, "preview_table"):
+            self.apply_table_header_font(self.preview_table)
+        for key, button in getattr(self, "workbench_buttons", {}).items():
+            button.blockSignals(True)
+            button.setChecked(key == resolved_view)
+            button.blockSignals(False)
+        if persist:
+            self.config["ui"]["workbench_view"] = resolved_view
+            self.save_config_if_ready()
+
+    def build_window_toolbar(self) -> QWidget:
+        container = QWidget(self)
+        container.setObjectName("windowToolbar")
+        layout = QHBoxLayout(container)
+        layout.setContentsMargins(14, 10, 14, 10)
+        layout.setSpacing(10)
+
+        title_layout = QVBoxLayout()
+        title_layout.setSpacing(2)
+        title = QLabel("EasyChat 精准群发", container)
+        title.setObjectName("windowTitle")
+        subtitle = QLabel("聚焦高频发送流程，低频配置可折叠；主题支持自动 / 浅色 / 深色。", container)
+        subtitle.setObjectName("windowSubtitle")
+        subtitle.setWordWrap(False)
+        self.window_subtitle_label = subtitle
+        title_layout.addWidget(title)
+        subtitle.hide()
+        layout.addLayout(title_layout, stretch=1)
+
+        theme_label = QLabel("主题", container)
+        self.style_helper_label(theme_label, color="#555")
+        layout.addWidget(theme_label)
+
+        self.theme_mode_combo = QComboBox(container)
+        self.theme_mode_combo.addItem("自动", THEME_MODE_AUTO)
+        self.theme_mode_combo.addItem("浅色", THEME_MODE_LIGHT)
+        self.theme_mode_combo.addItem("深色", THEME_MODE_DARK)
+        self.theme_mode_combo.currentIndexChanged.connect(self.on_theme_mode_changed)
+        layout.addWidget(self.theme_mode_combo)
+
+        self.theme_status_label = QLabel("当前主题：浅色", container)
+        self.style_helper_label(self.theme_status_label, color="#555")
+        self.theme_status_label.hide()
+        layout.addWidget(self.theme_status_label)
+        return container
+
+    def apply_theme(self) -> None:
+        self._resolved_theme = self.resolve_theme_mode()
+        self._theme_tokens = dict(THEME_PALETTES[self._resolved_theme])
+        app = QApplication.instance()
+        stylesheet = self.build_app_stylesheet(self._theme_tokens)
+        if app is not None:
+            app.setStyleSheet(stylesheet)
+        else:
+            self.setStyleSheet(stylesheet)
+        self.refresh_theme_dependent_widgets()
+
+    def refresh_theme_dependent_widgets(self) -> None:
+        for child in self.findChildren(QWidget):
+            if child.property("themeStyleRole"):
+                self.apply_semantic_widget_style(child)
+        for table_name in (
+            "preview_table",
+            "schedule_table",
+            "basic_selected_table",
+            "basic_attachment_table",
+            "common_attachment_table",
+        ):
+            table = getattr(self, table_name, None)
+            if isinstance(table, QTableWidget):
+                self.apply_table_header_font(table)
+        if hasattr(self, "theme_status_label"):
+            resolved_label = "深色" if self._resolved_theme == THEME_MODE_DARK else "浅色"
+            mode_label = {
+                THEME_MODE_AUTO: "自动",
+                THEME_MODE_LIGHT: "浅色",
+                THEME_MODE_DARK: "深色",
+            }.get(self._theme_mode, "自动")
+            self.theme_status_label.setText(f"当前主题：{resolved_label}（{mode_label}）")
+
+    def on_theme_mode_changed(self, _index: int) -> None:
+        if not hasattr(self, "theme_mode_combo"):
+            return
+        self._theme_mode = str(self.theme_mode_combo.currentData() or THEME_MODE_AUTO)
+        self.config["settings"]["theme_mode"] = self._theme_mode
+        self.save_config_if_ready()
+        self.apply_theme()
+
+    def on_theme_timer_timeout(self) -> None:
+        if self._theme_mode == THEME_MODE_AUTO:
+            resolved = self.resolve_theme_mode()
+            if resolved != self._resolved_theme:
+                self.apply_theme()
 
     def is_debug_mode_enabled(self) -> bool:
         return bool(hasattr(self, "debug_mode_button") and self.debug_mode_button.isChecked())
@@ -438,9 +1096,28 @@ class ExcelSenderGUI(QWidget):
         self.update_debug_mode_button_text()
         self.save_config_if_ready()
 
+    def on_advanced_settings_toggled(self, checked: bool) -> None:
+        self.update_advanced_settings_panel(bool(checked))
+        self.config["ui"]["advanced_settings_expanded"] = bool(checked)
+        self.save_config_if_ready()
+
+    def update_advanced_settings_panel(self, expanded: bool) -> None:
+        if not hasattr(self, "advanced_settings_toggle_button") or not hasattr(self, "advanced_settings_panel"):
+            return
+        self.advanced_settings_toggle_button.blockSignals(True)
+        self.advanced_settings_toggle_button.setChecked(expanded)
+        self.advanced_settings_toggle_button.blockSignals(False)
+        self.advanced_settings_toggle_button.setText("收起高级设置" if expanded else "展开高级设置")
+        self.advanced_settings_toggle_button.setArrowType(Qt.DownArrow if expanded else Qt.RightArrow)
+        self.advanced_settings_panel.setVisible(expanded)
+
     def update_compact_ui_mode(self) -> None:
         compact = self.width() < 1260
         self._compact_ui_mode = compact
+        if hasattr(self, "window_subtitle_label"):
+            self.window_subtitle_label.setVisible(self.width() >= 1180)
+        if hasattr(self, "theme_status_label"):
+            self.theme_status_label.setVisible(self.width() >= 1180)
         if hasattr(self, "preview_button"):
             self.preview_button.setText("刷新" if compact else "刷新发送计划")
         if hasattr(self, "import_json_button"):
@@ -463,6 +1140,12 @@ class ExcelSenderGUI(QWidget):
             self.delete_schedule_button.setText("删除" if compact else "删除队列记录")
         if hasattr(self, "cancel_schedule_button"):
             self.cancel_schedule_button.setText("取消" if compact else "取消选中任务")
+        if hasattr(self, "basic_match_button"):
+            self.basic_match_button.setText("预览" if compact else "预览匹配结果")
+        if hasattr(self, "basic_start_button") and self.current_send_origin != "basic":
+            self.update_basic_progress_status()
+        if hasattr(self, "navigation_panel"):
+            self.navigation_panel.setMaximumWidth(180 if compact else 196)
         if hasattr(self, "send_status_label"):
             self.send_status_label.setMinimumWidth(64 if compact else 72)
         self.update_debug_mode_button_text()
@@ -488,43 +1171,302 @@ class ExcelSenderGUI(QWidget):
         page = QWidget(self)
         layout = QVBoxLayout(page)
         layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(12)
-        layout.addWidget(self.build_excel_group())
-        layout.addWidget(self.build_template_group(), stretch=1)
+        layout.setSpacing(10)
+
+        splitter = QSplitter(Qt.Horizontal, page)
+        splitter.addWidget(self.build_excel_group())
+        splitter.addWidget(self.build_template_group())
+        splitter.setStretchFactor(0, 4)
+        splitter.setStretchFactor(1, 5)
+        layout.addWidget(splitter, stretch=1)
         return page
+
+    def build_basic_page(self) -> QWidget:
+        page = QWidget(self)
+        layout = QVBoxLayout(page)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(10)
+
+        splitter = QSplitter(Qt.Horizontal, page)
+
+        left_panel = QWidget(page)
+        left_layout = QVBoxLayout(left_panel)
+        left_layout.setContentsMargins(0, 0, 0, 0)
+        left_layout.setSpacing(10)
+        self.basic_import_group = self.build_basic_import_group()
+        self.basic_message_group = self.build_basic_message_group()
+        left_layout.addWidget(self.basic_import_group)
+        left_layout.addWidget(self.basic_message_group)
+        left_layout.addStretch(0)
+        self.basic_left_layout = left_layout
+        self.basic_left_spacer_index = left_layout.count() - 1
+
+        right_panel = QWidget(page)
+        right_layout = QVBoxLayout(right_panel)
+        right_layout.setContentsMargins(0, 0, 0, 0)
+        right_layout.setSpacing(10)
+        self.basic_receiver_group = self.build_basic_receiver_group()
+        self.basic_attachment_group = self.build_basic_attachment_group()
+        self.basic_send_group = self.build_basic_send_group()
+        right_layout.addWidget(self.basic_receiver_group)
+        right_layout.addWidget(self.basic_attachment_group)
+        right_layout.addWidget(self.basic_send_group)
+        right_layout.addStretch(0)
+        self.basic_right_layout = right_layout
+        self.basic_right_spacer_index = right_layout.count() - 1
+
+        splitter.addWidget(self.build_scroll_area(left_panel))
+        splitter.addWidget(self.build_scroll_area(right_panel))
+        splitter.setStretchFactor(0, 4)
+        splitter.setStretchFactor(1, 5)
+        layout.addWidget(splitter, stretch=1)
+        self.refresh_basic_section_layout()
+        return page
+
+    def build_basic_intro_group(self) -> QGroupBox:
+        group = QGroupBox("普通用户快捷入口")
+        layout = QVBoxLayout(group)
+        layout.setSpacing(8)
+        title = QLabel("按步骤完成一次安全、可暂停的微信群发。")
+        self.style_overview_label(title)
+        layout.addWidget(title)
+        return group
+
+    def build_basic_import_group(self) -> QGroupBox:
+        group = QGroupBox("1. 导入数据")
+        layout = self.init_basic_collapsible_group(group, "import")
+
+        path_layout = QHBoxLayout()
+        self.basic_excel_path_input = FileDropLineEdit(
+            suffixes=[".xlsx", ".xls", ".csv"],
+            parent=self,
+        )
+        self.basic_excel_path_input.setPlaceholderText("选择或拖入 Excel 文件（支持 .xlsx / .xls / .csv）")
+        self.basic_excel_path_input.textChanged.connect(self.on_basic_excel_path_changed)
+        path_layout.addWidget(self.basic_excel_path_input)
+
+        choose_button = QPushButton("选择文件")
+        choose_button.clicked.connect(self.select_basic_excel_file)
+        self.set_button_role(choose_button, "secondary", min_width=120)
+        path_layout.addWidget(choose_button)
+
+        self.basic_load_button = QPushButton("导入数据")
+        self.basic_load_button.clicked.connect(self.load_basic_excel_data)
+        self.set_button_role(self.basic_load_button, "primary", min_width=140)
+        path_layout.addWidget(self.basic_load_button)
+        layout.addLayout(path_layout)
+
+        self.basic_data_status_label = QLabel("尚未导入数据。")
+        self.style_helper_label(self.basic_data_status_label, color="#555")
+        layout.addWidget(self.basic_data_status_label)
+
+        self.basic_column_status_label = QLabel("接收人匹配固定使用 Excel 中的“微信号”列。")
+        self.style_helper_label(self.basic_column_status_label, color="#555")
+        layout.addWidget(self.basic_column_status_label)
+        return group
+
+    def build_basic_receiver_group(self) -> QGroupBox:
+        group = QGroupBox("2. 选择微信接收人（按微信号匹配）")
+        group.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Expanding)
+        layout = self.init_basic_collapsible_group(group, "receiver")
+
+        action_row = QHBoxLayout()
+        self.basic_match_keyword_input = QLineEdit(self)
+        self.basic_match_keyword_input.setPlaceholderText("例如：ABC，或 abc001,abc002")
+        self.basic_match_keyword_input.textChanged.connect(self.on_basic_match_keyword_changed)
+        action_row.addWidget(self.basic_match_keyword_input)
+
+        self.basic_match_button = QPushButton("预览匹配结果")
+        self.basic_match_button.clicked.connect(self.preview_basic_match_results)
+        self.set_button_role(self.basic_match_button, "secondary", min_width=140)
+        action_row.addWidget(self.basic_match_button)
+        layout.addLayout(action_row)
+
+        stats_row = QHBoxLayout()
+        self.basic_selected_summary_label = QLabel("当前未选择接收人。")
+        self.style_helper_label(self.basic_selected_summary_label, color="#555")
+        stats_row.addWidget(self.basic_selected_summary_label, stretch=1)
+        self.basic_removed_summary_label = QLabel("去重移除：0 人")
+        self.style_helper_label(self.basic_removed_summary_label, color="#555")
+        stats_row.addWidget(self.basic_removed_summary_label)
+        layout.addLayout(stats_row)
+
+        self.basic_selected_table = QTableWidget(0, 3, self)
+        self.basic_selected_table.setHorizontalHeaderLabels(["微信号", "显示名称", "发送状态"])
+        self.basic_selected_table.verticalHeader().setVisible(False)
+        self.basic_selected_table.setSelectionBehavior(QAbstractItemView.SelectRows)
+        self.basic_selected_table.setEditTriggers(QAbstractItemView.NoEditTriggers)
+        self.basic_selected_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeToContents)
+        self.basic_selected_table.horizontalHeader().setSectionResizeMode(1, QHeaderView.Stretch)
+        self.basic_selected_table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeToContents)
+        self.basic_selected_table.setMinimumHeight(150)
+        layout.addWidget(self.basic_selected_table, stretch=1)
+        return group
+
+    def build_basic_message_group(self) -> QGroupBox:
+        group = QGroupBox("3. 消息内容")
+        group.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Expanding)
+        layout = self.init_basic_collapsible_group(group, "message")
+
+        variable_row = QHBoxLayout()
+        variable_row.addWidget(QLabel("可插入变量"))
+        self.basic_variable_combo = QComboBox(self)
+        self.basic_variable_combo.setEnabled(False)
+        variable_row.addWidget(self.basic_variable_combo, stretch=1)
+        self.basic_insert_variable_button = QPushButton("插入变量")
+        self.basic_insert_variable_button.clicked.connect(self.insert_basic_variable)
+        self.set_button_role(self.basic_insert_variable_button, "secondary", min_width=120)
+        self.basic_insert_variable_button.setEnabled(False)
+        variable_row.addWidget(self.basic_insert_variable_button)
+        layout.addLayout(variable_row)
+
+        self.basic_variable_status_label = QLabel("导入 Excel 后会在这里显示可插入的变量。")
+        self.style_helper_label(self.basic_variable_status_label, color="#555")
+        layout.addWidget(self.basic_variable_status_label)
+
+        self.basic_message_input = QPlainTextEdit(self)
+        self.basic_message_input.setPlaceholderText("请输入本次要发送的消息内容。")
+        self.basic_message_input.setMinimumHeight(140)
+        self.basic_message_input.textChanged.connect(self.on_basic_message_changed)
+        layout.addWidget(self.basic_message_input, stretch=1)
+        return group
+
+    def build_basic_attachment_group(self) -> QGroupBox:
+        group = QGroupBox("4. 附件（可多个）")
+        group.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Expanding)
+        layout = self.init_basic_collapsible_group(group, "attachment")
+
+        input_row = QHBoxLayout()
+        self.basic_attachment_input = FileDropLineEdit(allow_multiple=True, parent=self)
+        self.basic_attachment_input.setPlaceholderText("拖入附件或输入路径（多文件用分号分隔）")
+        input_row.addWidget(self.basic_attachment_input)
+
+        select_button = QPushButton("选择附件")
+        select_button.clicked.connect(self.select_basic_attachments)
+        self.set_button_role(select_button, "secondary", min_width=120)
+        input_row.addWidget(select_button)
+
+        add_button = QPushButton("添加附件")
+        add_button.clicked.connect(self.import_basic_attachments_from_input)
+        self.set_button_role(add_button, "secondary", min_width=120)
+        input_row.addWidget(add_button)
+        layout.addLayout(input_row)
+
+        action_row = QHBoxLayout()
+        self.basic_remove_attachment_button = QPushButton("删除选中附件")
+        self.basic_remove_attachment_button.clicked.connect(self.remove_selected_basic_attachments)
+        self.set_button_role(self.basic_remove_attachment_button, "secondary", min_width=140)
+        self.basic_clear_attachment_button = QPushButton("清空附件")
+        self.basic_clear_attachment_button.clicked.connect(self.clear_basic_attachments)
+        self.set_button_role(self.basic_clear_attachment_button, "secondary", min_width=120)
+        action_row.addWidget(self.basic_remove_attachment_button)
+        action_row.addWidget(self.basic_clear_attachment_button)
+        action_row.addStretch(1)
+        layout.addLayout(action_row)
+
+        self.basic_attachment_table = QTableWidget(0, 2, self)
+        self.basic_attachment_table.setHorizontalHeaderLabels(["类型", "路径"])
+        self.basic_attachment_table.verticalHeader().setVisible(False)
+        self.basic_attachment_table.setSelectionBehavior(QAbstractItemView.SelectRows)
+        self.basic_attachment_table.setEditTriggers(QAbstractItemView.NoEditTriggers)
+        self.basic_attachment_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeToContents)
+        self.basic_attachment_table.horizontalHeader().setSectionResizeMode(1, QHeaderView.Stretch)
+        self.basic_attachment_table.setMinimumHeight(120)
+        layout.addWidget(self.basic_attachment_table, stretch=1)
+        return group
+
+    def build_basic_send_group(self) -> QGroupBox:
+        group = QGroupBox("5. 发送设置")
+        layout = self.init_basic_collapsible_group(group, "send")
+
+        settings_grid = QGridLayout()
+        settings_grid.setHorizontalSpacing(10)
+        settings_grid.setVerticalSpacing(8)
+        settings_grid.addWidget(QLabel("发送间隔（秒）"), 0, 0)
+        self.basic_interval_spin = QSpinBox(self)
+        self.basic_interval_spin.setRange(0, 3600)
+        self.basic_interval_spin.valueChanged.connect(self.on_basic_interval_changed)
+        settings_grid.addWidget(self.basic_interval_spin, 0, 1)
+        settings_grid.addWidget(QLabel("本次发送人数"), 0, 2)
+        self.basic_batch_limit_spin = QSpinBox(self)
+        self.basic_batch_limit_spin.setRange(1, 9999)
+        self.basic_batch_limit_spin.valueChanged.connect(self.on_basic_batch_limit_changed)
+        settings_grid.addWidget(self.basic_batch_limit_spin, 0, 3)
+        settings_grid.setColumnStretch(4, 1)
+        layout.addLayout(settings_grid)
+
+        self.basic_progress_label = QLabel("当前没有可发送任务。")
+        self.style_overview_label(self.basic_progress_label)
+        layout.addWidget(self.basic_progress_label)
+
+        self.basic_runtime_status_label = QLabel("等待发送。")
+        self.style_helper_label(self.basic_runtime_status_label, color="#555")
+        layout.addWidget(self.basic_runtime_status_label)
+
+        action_row = QHBoxLayout()
+        self.basic_start_button = QPushButton("发送")
+        self.basic_start_button.clicked.connect(self.start_basic_send)
+        self.set_button_role(self.basic_start_button, "primary", min_width=160, min_height=44)
+        action_row.addWidget(self.basic_start_button)
+
+        self.basic_stop_button = QPushButton("停止")
+        self.basic_stop_button.setEnabled(False)
+        self.basic_stop_button.clicked.connect(self.stop_sending)
+        self.set_button_role(self.basic_stop_button, "danger", min_width=140, min_height=44)
+        action_row.addWidget(self.basic_stop_button)
+        action_row.addStretch(1)
+        layout.addLayout(action_row)
+        return group
 
     def build_local_store_page(self) -> QWidget:
         page = QWidget(self)
         layout = QVBoxLayout(page)
         layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(12)
-        layout.addWidget(self.build_local_store_group(), stretch=3)
-        layout.addWidget(self.build_filter_group(), stretch=2)
+        layout.setSpacing(10)
+
+        splitter = QSplitter(Qt.Horizontal, page)
+        splitter.addWidget(self.build_local_store_group())
+        splitter.addWidget(self.build_filter_group())
+        splitter.setStretchFactor(0, 3)
+        splitter.setStretchFactor(1, 2)
+        layout.addWidget(splitter, stretch=1)
         return page
 
     def build_send_prepare_page(self) -> QWidget:
         page = QWidget(self)
         layout = QVBoxLayout(page)
         layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(12)
-        layout.addWidget(self.build_control_group())
+        layout.setSpacing(10)
 
-        layout.addWidget(self.build_execution_settings_group(), stretch=2)
-        layout.addWidget(self.build_preview_group(), stretch=3)
+        splitter = QSplitter(Qt.Horizontal, page)
+
+        left_panel = QWidget(page)
+        left_layout = QVBoxLayout(left_panel)
+        left_layout.setContentsMargins(0, 0, 0, 0)
+        left_layout.setSpacing(10)
+        left_layout.addWidget(self.build_control_group())
+        left_layout.addWidget(self.build_preview_group(), stretch=1)
+
+        settings_group = self.build_execution_settings_group()
+        splitter.addWidget(left_panel)
+        splitter.addWidget(self.build_scroll_area(settings_group))
+        splitter.setStretchFactor(0, 5)
+        splitter.setStretchFactor(1, 3)
+        layout.addWidget(splitter, stretch=1)
         return page
 
     def build_task_center_page(self) -> QWidget:
         page = QWidget(self)
         layout = QVBoxLayout(page)
         layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(12)
+        layout.setSpacing(10)
         layout.addWidget(self.build_task_center_toolbar())
 
-        bottom_splitter = QSplitter(Qt.Vertical, page)
+        bottom_splitter = QSplitter(Qt.Horizontal, page)
         bottom_splitter.addWidget(self.build_schedule_group())
         bottom_splitter.addWidget(self.build_log_group())
-        bottom_splitter.setStretchFactor(0, 3)
-        bottom_splitter.setStretchFactor(1, 2)
+        bottom_splitter.setStretchFactor(0, 4)
+        bottom_splitter.setStretchFactor(1, 3)
         layout.addWidget(bottom_splitter, stretch=1)
         return page
 
@@ -533,17 +1475,13 @@ class ExcelSenderGUI(QWidget):
         layout = QVBoxLayout(group)
         layout.setSpacing(10)
 
-        helper_label = QLabel("这里集中处理 JSON 任务导入、任务排队、任务预览和执行日志，适合管理已排队或待执行的任务。")
-        self.style_helper_label(helper_label, color="#555")
-        layout.addWidget(helper_label)
-
         action_layout = QHBoxLayout()
         self.import_json_button = QPushButton("导入 JSON（多选）")
         self.import_json_button.clicked.connect(self.import_json_tasks)
         self.set_button_role(self.import_json_button, "secondary", min_width=120, min_height=38)
         action_layout.addWidget(self.import_json_button)
 
-        open_send_prepare_button = QPushButton("返回发送准备")
+        open_send_prepare_button = QPushButton("返回工作台")
         open_send_prepare_button.clicked.connect(self.open_send_prepare_page)
         self.set_button_role(open_send_prepare_button, "secondary", min_width=120, min_height=38)
         action_layout.addWidget(open_send_prepare_button)
@@ -580,15 +1518,17 @@ class ExcelSenderGUI(QWidget):
         layout.addLayout(summary_row)
         layout.addLayout(self.build_action_bar())
 
-        helper_label = QLabel("先核对发送计划，再选择立即开始、创建普通定时任务或导出当前计划；JSON 任务导入请前往“任务中心”。")
-        self.style_helper_label(helper_label, color="#555")
-        layout.addWidget(helper_label)
         return group
 
     def build_execution_settings_group(self) -> QGroupBox:
-        group = QGroupBox("执行方式设置")
+        group = QGroupBox("发送设置")
         layout = QVBoxLayout(group)
-        layout.setSpacing(12)
+        layout.setSpacing(10)
+
+        common_card = QWidget(group)
+        common_layout = QVBoxLayout(common_card)
+        common_layout.setContentsMargins(0, 0, 0, 0)
+        common_layout.setSpacing(10)
 
         mode_layout = QHBoxLayout()
         mode_title = QLabel("启动方式")
@@ -604,11 +1544,7 @@ class ExcelSenderGUI(QWidget):
         mode_layout.addWidget(self.immediate_mode_radio)
         mode_layout.addWidget(self.scheduled_mode_radio)
         mode_layout.addStretch(1)
-        layout.addLayout(mode_layout)
-
-        schedule_tip_label = QLabel("普通定时任务使用这里的计划时间；如设置周期，会在本次成功后按规则自动排下一次。JSON 任务也可携带自己的周期规则。")
-        self.style_helper_label(schedule_tip_label, color="#555")
-        layout.addWidget(schedule_tip_label)
+        common_layout.addLayout(mode_layout)
 
         plan_time_layout = QHBoxLayout()
         plan_time_layout.addWidget(QLabel("计划时间"))
@@ -619,7 +1555,28 @@ class ExcelSenderGUI(QWidget):
         self.scheduled_time_edit.dateTimeChanged.connect(self.on_send_mode_changed)
         plan_time_layout.addWidget(self.scheduled_time_edit)
         plan_time_layout.addStretch(1)
-        layout.addLayout(plan_time_layout)
+        common_layout.addLayout(plan_time_layout)
+
+        interval_layout = QHBoxLayout()
+        interval_layout.addWidget(QLabel("发送间隔（秒）"))
+        self.interval_spin = QSpinBox(self)
+        self.interval_spin.setRange(0, 3600)
+        self.interval_spin.valueChanged.connect(self.on_interval_changed)
+        interval_layout.addWidget(self.interval_spin)
+        interval_layout.addStretch(1)
+        common_layout.addLayout(interval_layout)
+        layout.addWidget(common_card)
+
+        self.advanced_settings_toggle_button = QToolButton(group)
+        self.advanced_settings_toggle_button.setToolButtonStyle(Qt.ToolButtonTextBesideIcon)
+        self.advanced_settings_toggle_button.setCheckable(True)
+        self.advanced_settings_toggle_button.toggled.connect(self.on_advanced_settings_toggled)
+        layout.addWidget(self.advanced_settings_toggle_button)
+
+        self.advanced_settings_panel = QWidget(group)
+        advanced_layout = QVBoxLayout(self.advanced_settings_panel)
+        advanced_layout.setContentsMargins(0, 0, 0, 0)
+        advanced_layout.setSpacing(10)
 
         recurrence_layout = QGridLayout()
         recurrence_layout.setHorizontalSpacing(10)
@@ -640,48 +1597,33 @@ class ExcelSenderGUI(QWidget):
         self.schedule_mode_hint_label = QLabel("一次性任务不会自动生成下一次执行。")
         self.style_helper_label(self.schedule_mode_hint_label, color="#555")
         recurrence_layout.addWidget(self.schedule_mode_hint_label, 2, 0, 1, 2)
-        layout.addLayout(recurrence_layout)
+        advanced_layout.addLayout(recurrence_layout)
 
-        layout.addWidget(self.build_separator())
+        advanced_layout.addWidget(self.build_separator())
 
-        rhythm_title = QLabel("发送节奏")
-        self.style_section_title_label(rhythm_title)
-        layout.addWidget(rhythm_title)
+        delay_title = QLabel("高级节奏与汇报")
+        self.style_section_title_label(delay_title)
+        advanced_layout.addWidget(delay_title)
 
         rhythm_grid = QGridLayout()
         rhythm_grid.setHorizontalSpacing(10)
         rhythm_grid.setVerticalSpacing(8)
-
-        rhythm_grid.addWidget(QLabel("发送间隔（秒）"), 0, 0)
-        self.interval_spin = QSpinBox(self)
-        self.interval_spin.setRange(0, 3600)
-        self.interval_spin.valueChanged.connect(self.on_interval_changed)
-        rhythm_grid.addWidget(self.interval_spin, 0, 1)
-
-        rhythm_grid.addWidget(QLabel("随机延迟（秒）"), 1, 0)
+        rhythm_grid.addWidget(QLabel("随机延迟（秒）"), 0, 0)
         self.random_delay_min_spin = QSpinBox(self)
         self.random_delay_min_spin.setRange(0, 3600)
         self.random_delay_min_spin.valueChanged.connect(self.on_bulk_send_option_changed)
-        rhythm_grid.addWidget(QLabel("最小"), 1, 1)
-        rhythm_grid.addWidget(self.random_delay_min_spin, 1, 2)
+        rhythm_grid.addWidget(QLabel("最小"), 0, 1)
+        rhythm_grid.addWidget(self.random_delay_min_spin, 0, 2)
         self.random_delay_max_spin = QSpinBox(self)
         self.random_delay_max_spin.setRange(0, 3600)
         self.random_delay_max_spin.valueChanged.connect(self.on_bulk_send_option_changed)
-        rhythm_grid.addWidget(QLabel("最大"), 1, 3)
-        rhythm_grid.addWidget(self.random_delay_max_spin, 1, 4)
-        rhythm_grid.setColumnStretch(5, 1)
-        layout.addLayout(rhythm_grid)
-
-        layout.addWidget(self.build_separator())
-
-        report_title = QLabel("任务汇报")
-        self.style_section_title_label(report_title)
-        layout.addWidget(report_title)
+        rhythm_grid.addWidget(QLabel("最大"), 0, 3)
+        rhythm_grid.addWidget(self.random_delay_max_spin, 0, 4)
+        advanced_layout.addLayout(rhythm_grid)
 
         report_grid = QGridLayout()
         report_grid.setHorizontalSpacing(10)
         report_grid.setVerticalSpacing(8)
-
         report_grid.addWidget(QLabel("操作人"), 0, 0)
         self.operator_name_input = QLineEdit(self)
         self.operator_name_input.setPlaceholderText("用于任务汇报")
@@ -699,19 +1641,17 @@ class ExcelSenderGUI(QWidget):
         self.stop_on_error_checkbox.setToolTip("开启：某个联系人发送失败时立即停止整批任务；关闭：记录失败后继续发后面的联系人。")
         self.stop_on_error_checkbox.toggled.connect(self.on_bulk_send_option_changed)
         report_grid.addWidget(self.stop_on_error_checkbox, 3, 0, 1, 2)
-        layout.addLayout(report_grid)
+        advanced_layout.addLayout(report_grid)
+        advanced_layout.addStretch(1)
+        layout.addWidget(self.advanced_settings_panel)
         layout.addStretch(1)
-
+        self.update_advanced_settings_panel(False)
         return group
 
     def build_schedule_group(self) -> QGroupBox:
         group = QGroupBox("任务队列")
         layout = QVBoxLayout(group)
         layout.setSpacing(10)
-
-        helper_label = QLabel("这里汇总普通定时任务和 JSON 任务，可查看计划、开启/关闭自动调度、删除调度记录，失败后也可继续发送剩余未发送项。")
-        self.style_helper_label(helper_label, color="#555")
-        layout.addWidget(helper_label)
 
         task_action_layout = QGridLayout()
         task_action_layout.setHorizontalSpacing(10)
@@ -771,10 +1711,6 @@ class ExcelSenderGUI(QWidget):
         group = QGroupBox("本地库数据")
         layout = QVBoxLayout(group)
         layout.setSpacing(10)
-
-        tip_label = QLabel("这里展示当前 SQLite 本地库里的好友库和群聊库。导入新的好友文件不会覆盖群聊 current，反之亦然；筛选时按当前页签的数据范围执行。")
-        self.style_helper_label(tip_label, color="#555")
-        layout.addWidget(tip_label)
 
         action_layout = QHBoxLayout()
         self.refresh_local_store_button = QPushButton("刷新本地库")
@@ -914,7 +1850,7 @@ class ExcelSenderGUI(QWidget):
         layout.addWidget(self.placeholder_status_label)
 
         attachment_title = QLabel("通用附件（任意本地文件）")
-        attachment_title.setStyleSheet("font-weight: 600;")
+        self.style_section_title_label(attachment_title)
         layout.addWidget(attachment_title)
 
         attachment_path_layout = QHBoxLayout()
@@ -1076,10 +2012,7 @@ class ExcelSenderGUI(QWidget):
         self.preview_table.setSelectionBehavior(QTableWidget.SelectRows)
         self.preview_table.itemChanged.connect(self.on_preview_item_changed)
         header = self.preview_table.horizontalHeader()
-        header_font = QFont(self.font())
-        header_font.setPointSize(max(self.font().pointSize(), 12))
-        header_font.setBold(True)
-        header.setFont(header_font)
+        self.apply_table_header_font(self.preview_table)
         header.setSectionResizeMode(0, QHeaderView.ResizeToContents)
         header.setSectionResizeMode(1, QHeaderView.ResizeToContents)
         header.setSectionResizeMode(2, QHeaderView.Stretch)
@@ -1127,6 +2060,7 @@ class ExcelSenderGUI(QWidget):
         self._is_restoring_state = True
         try:
             self.excel_path_input.setText(self.config["excel"]["path"])
+            self.basic_excel_path_input.setText(self.config["excel"]["path"])
             self.send_target_column_input.setText(self.config["excel"]["send_target_column"])
             self.filter_fields_input.setText(self.config["filter"]["fields"])
             self.filter_pattern_input.setText(self.config["filter"]["pattern"])
@@ -1135,6 +2069,13 @@ class ExcelSenderGUI(QWidget):
             self.common_attachments = self.normalize_attachment_items(self.config["template"].get("common_attachments", []))
             self.refresh_common_attachment_table()
             self.interval_spin.setValue(self.config["settings"]["send_interval"])
+            basic_mode = dict(self.config.get("basic_mode") or {})
+            self.basic_message_input.setPlainText(str(basic_mode.get("message_text") or ""))
+            self.basic_match_keyword_input.setText(str(basic_mode.get("match_keyword") or ""))
+            self.basic_batch_limit_spin.setValue(max(1, int(basic_mode.get("batch_limit") or 50)))
+            self.basic_interval_spin.setValue(int(self.config["settings"]["send_interval"]))
+            self.basic_attachments = self.normalize_attachment_items(basic_mode.get("attachments", []))
+            self.refresh_basic_attachment_table()
             bulk_send = dict(self.config["bulk_send"])
             self.random_delay_min_spin.setValue(int(bulk_send["random_delay_min"]))
             self.random_delay_max_spin.setValue(int(bulk_send["random_delay_max"]))
@@ -1164,6 +2105,12 @@ class ExcelSenderGUI(QWidget):
                     self.lang_en.setChecked(True)
                 else:
                     self.lang_zh_cn.setChecked(True)
+            theme_mode = str(self.config["settings"].get("theme_mode") or THEME_MODE_AUTO)
+            theme_index = self.theme_mode_combo.findData(theme_mode)
+            self.theme_mode_combo.setCurrentIndex(max(theme_index, 0))
+            self._theme_mode = theme_mode if theme_mode in {THEME_MODE_AUTO, THEME_MODE_LIGHT, THEME_MODE_DARK} else THEME_MODE_AUTO
+            ui_config = dict(self.config.get("ui") or {})
+            self.update_advanced_settings_panel(bool(ui_config.get("advanced_settings_expanded", False)))
         finally:
             self._is_restoring_state = False
 
@@ -1176,7 +2123,16 @@ class ExcelSenderGUI(QWidget):
         self.update_placeholder_status()
         self.update_send_target_column_status()
         self.update_action_button_state()
-        self.main_tabs.setCurrentWidget(self.data_template_page)
+        self.update_basic_variable_options()
+        self.refresh_basic_selected_table()
+        self.update_basic_progress_status()
+        self.apply_theme()
+        ui_config = dict(self.config.get("ui") or {})
+        self.navigate_to(
+            str(ui_config.get("nav_page") or PAGE_KEY_WORKBENCH),
+            str(ui_config.get("workbench_view") or WORKBENCH_VIEW_BASIC),
+            persist=False,
+        )
         if self.excel_path_input.text().strip():
             self.load_excel_data(show_success=False)
         else:
@@ -1195,7 +2151,7 @@ class ExcelSenderGUI(QWidget):
     def update_local_db_status(self) -> None:
         summaries = self.local_store.get_current_import_summaries()
         if not summaries:
-            self.local_db_status_label.setStyleSheet("color:#555;")
+            self.set_label_tone(self.local_db_status_label, "muted")
             self.local_db_status_label.setText("本地库尚未导入数据，可前往“本地库数据”页查看详情。")
             return
 
@@ -1209,13 +2165,13 @@ class ExcelSenderGUI(QWidget):
                 text += f" 当前任务快照 {len(self.records)} 行。"
             else:
                 text += " 当前正在使用好友+群聊本地库数据。"
-        self.local_db_status_label.setStyleSheet("color:#027a48;")
+        self.set_label_tone(self.local_db_status_label, "success")
         self.local_db_status_label.setText(text)
 
     def refresh_local_store_page(self) -> None:
         summaries = self.local_store.get_current_import_summaries()
         if not summaries:
-            self.local_store_summary_label.setStyleSheet("color:#555;")
+            self.set_label_tone(self.local_store_summary_label, "muted")
             self.local_store_summary_label.setText("本地库暂无数据，请先导入 Excel/CSV。")
             for view_refs in self.local_store_views.values():
                 summary_label = view_refs["summary_label"]
@@ -1224,7 +2180,7 @@ class ExcelSenderGUI(QWidget):
                 assert isinstance(summary_label, QLabel)
                 assert isinstance(columns_view, QPlainTextEdit)
                 assert isinstance(table, QTableWidget)
-                summary_label.setStyleSheet("color:#555;")
+                self.set_label_tone(summary_label, "muted")
                 summary_label.setText("暂无数据。")
                 columns_view.clear()
                 table.setColumnCount(0)
@@ -1232,7 +2188,7 @@ class ExcelSenderGUI(QWidget):
             self.update_local_filter_scope()
             return
 
-        self.local_store_summary_label.setStyleSheet("color:#027a48;")
+        self.set_label_tone(self.local_store_summary_label, "success")
         self.local_store_summary_label.setText(
             "；".join(
                 f"{summary.dataset_label}：{summary.source_name}（导入时间 {summary.imported_at}，共 {summary.row_count} 行）"
@@ -1251,7 +2207,7 @@ class ExcelSenderGUI(QWidget):
             assert isinstance(table, QTableWidget)
 
             if summary is None:
-                summary_label.setStyleSheet("color:#555;")
+                self.set_label_tone(summary_label, "muted")
                 summary_label.setText(f"{DATASET_LABELS[dataset_type]}库暂无 current 批次。")
                 columns_view.clear()
                 table.setColumnCount(0)
@@ -1260,7 +2216,7 @@ class ExcelSenderGUI(QWidget):
 
             records, columns, _ = self.local_store.load_current_contacts(dataset_type)
             has_any_records = has_any_records or bool(records)
-            summary_label.setStyleSheet("color:#027a48;")
+            self.set_label_tone(summary_label, "success")
             summary_label.setText(
                 f"{summary.source_name} | 导入时间：{summary.imported_at} | 共 {summary.row_count} 行"
             )
@@ -1285,14 +2241,449 @@ class ExcelSenderGUI(QWidget):
 
     def open_local_store_page(self) -> None:
         self.refresh_local_store_page()
-        self.main_tabs.setCurrentWidget(self.local_store_page)
+        self.navigate_to(PAGE_KEY_LOCAL_STORE)
 
     def open_send_prepare_page(self) -> None:
-        self.main_tabs.setCurrentWidget(self.send_prepare_page)
+        self.navigate_to(PAGE_KEY_WORKBENCH, WORKBENCH_VIEW_SEND)
 
     def open_task_center_page(self) -> None:
         self.refresh_scheduled_jobs()
-        self.main_tabs.setCurrentWidget(self.task_center_page)
+        self.navigate_to(PAGE_KEY_TASK_CENTER)
+
+    def invalidate_basic_task(self, reason: str | None = None) -> None:
+        if self.basic_task_id is None:
+            return
+        self.basic_task_id = None
+        if reason:
+            self.append_log(reason)
+        self.update_basic_progress_status()
+        self.refresh_basic_selected_table()
+
+    def save_basic_mode_config(self) -> None:
+        self.config["basic_mode"]["message_text"] = self.basic_message_input.toPlainText()
+        self.config["basic_mode"]["attachments"] = [dict(item) for item in self.basic_attachments]
+        self.config["basic_mode"]["match_keyword"] = self.basic_match_keyword_input.text().strip()
+        self.config["basic_mode"]["batch_limit"] = self.basic_batch_limit_spin.value()
+        self.save_config_if_ready()
+
+    def on_basic_excel_path_changed(self, path: str) -> None:
+        normalized_path = path.strip()
+        self.config["excel"]["path"] = normalized_path
+        self.save_config_if_ready()
+        if hasattr(self, "excel_path_input") and self.excel_path_input.text().strip() != normalized_path:
+            self.excel_path_input.blockSignals(True)
+            self.excel_path_input.setText(normalized_path)
+            self.excel_path_input.blockSignals(False)
+        if normalized_path != self.basic_last_loaded_path:
+            self.basic_source_records = []
+            self.basic_columns = []
+            self.basic_selected_records = []
+            self.basic_last_loaded_path = ""
+            self.basic_last_match_total = 0
+            self.basic_last_duplicate_removed = 0
+            self.invalidate_basic_task("已更换基本功能页的数据文件，上一轮续发进度已重置。")
+            self.update_basic_variable_options()
+            self.refresh_basic_selected_table()
+            self.update_basic_progress_status()
+            self.basic_data_status_label.setText("文件已变更，请重新点击“导入数据”。")
+            self.set_label_tone(self.basic_data_status_label, "warning")
+
+    def select_basic_excel_file(self) -> None:
+        path = QFileDialog.getOpenFileName(
+            self,
+            "选择 Excel 文件",
+            "",
+            "表格文件(*.xlsx *.xls *.csv)",
+        )[0]
+        if path:
+            self.basic_excel_path_input.setText(path)
+
+    def load_basic_excel_data(self) -> bool:
+        path = self.basic_excel_path_input.text().strip()
+        if path == "":
+            QMessageBox.warning(self, "输入错误", "请先选择 Excel 文件。")
+            return False
+        try:
+            records, columns = load_contact_records(path)
+            validate_contact_records(records, columns, required_column=DEFAULT_SEND_TARGET_COLUMN)
+        except Exception as exc:
+            self.basic_source_records = []
+            self.basic_columns = []
+            self.basic_selected_records = []
+            self.basic_last_loaded_path = ""
+            self.basic_last_match_total = 0
+            self.basic_last_duplicate_removed = 0
+            self.invalidate_basic_task()
+            self.basic_data_status_label.setText(f"读取失败：{exc}")
+            self.set_label_tone(self.basic_data_status_label, "danger")
+            self.basic_column_status_label.setText("请确认 Excel 中存在“微信号”列后再重试。")
+            self.set_label_tone(self.basic_column_status_label, "warning")
+            self.update_basic_variable_options()
+            self.refresh_basic_selected_table()
+            self.update_basic_progress_status()
+            QMessageBox.warning(self, "读取失败", f"读取 Excel 失败！\n错误信息：{exc}")
+            return False
+
+        self.basic_source_records = self.attach_record_ids(records)
+        self.basic_columns = list(columns)
+        self.basic_selected_records = []
+        self.basic_last_loaded_path = path
+        self.basic_last_match_total = 0
+        self.basic_last_duplicate_removed = 0
+        self.invalidate_basic_task()
+        self.update_basic_variable_options()
+        self.refresh_basic_selected_table()
+        valid_count = len([row for row in self.basic_source_records if (row.get(DEFAULT_SEND_TARGET_COLUMN) or "").strip()])
+        self.basic_data_status_label.setText(
+            f"已导入 {len(self.basic_source_records)} 行数据，其中 {valid_count} 行包含可用“微信号”。"
+        )
+        self.set_label_tone(self.basic_data_status_label, "success")
+        self.basic_column_status_label.setText("当前匹配固定使用“微信号”列；如 Excel 缺少该列会阻止发送。")
+        self.set_label_tone(self.basic_column_status_label, "muted")
+        self.update_basic_progress_status()
+        QMessageBox.information(self, "读取成功", f"已成功读取 {len(self.basic_source_records)} 行 Excel 数据。")
+        return True
+
+    def update_basic_variable_options(self) -> None:
+        if not hasattr(self, "basic_variable_combo"):
+            return
+        self.basic_variable_combo.blockSignals(True)
+        self.basic_variable_combo.clear()
+        display_columns = [column for column in self.basic_columns if not str(column).startswith("__")]
+        for column in display_columns:
+            self.basic_variable_combo.addItem(column, column)
+        self.basic_variable_combo.blockSignals(False)
+        enabled = bool(display_columns)
+        self.basic_variable_combo.setEnabled(enabled)
+        self.basic_insert_variable_button.setEnabled(enabled)
+        if enabled:
+            self.basic_variable_status_label.setText(f"当前可插入 {len(display_columns)} 个变量，例如：{display_columns[0]}。")
+            self.set_label_tone(self.basic_variable_status_label, "success")
+        else:
+            self.basic_variable_status_label.setText("导入 Excel 后会在这里显示可插入的变量。")
+            self.set_label_tone(self.basic_variable_status_label, "muted")
+
+    def insert_basic_variable(self) -> None:
+        field_name = str(self.basic_variable_combo.currentData() or "").strip()
+        if not field_name:
+            return
+        self.basic_message_input.insertPlainText(f"{{{{{field_name}}}}}")
+        self.basic_message_input.setFocus()
+
+    def on_basic_match_keyword_changed(self, value: str) -> None:
+        self.basic_match_keyword = value.strip()
+        self.save_basic_mode_config()
+        if self.basic_selected_records:
+            self.invalidate_basic_task("已修改接收人关键词，若需重新匹配请再次点击“预览匹配结果”。")
+
+    def on_basic_message_changed(self) -> None:
+        self.save_basic_mode_config()
+        if self.basic_task_id is not None:
+            self.invalidate_basic_task("已修改基本功能页消息内容，续发进度已重置。")
+
+    def on_basic_interval_changed(self, value: int) -> None:
+        self.config["settings"]["send_interval"] = value
+        if hasattr(self, "interval_spin") and self.interval_spin.value() != value:
+            self.interval_spin.blockSignals(True)
+            self.interval_spin.setValue(value)
+            self.interval_spin.blockSignals(False)
+        self.save_config_if_ready()
+
+    def on_basic_batch_limit_changed(self, _value: int) -> None:
+        self.save_basic_mode_config()
+        self.update_basic_progress_status()
+
+    def build_basic_match_candidates(self) -> tuple[list[dict[str, str]], int, int]:
+        if not self.basic_source_records and not self.load_basic_excel_data():
+            return [], 0, 0
+        keywords = [
+            segment.strip()
+            for segment in re.split(r"[，,]", self.basic_match_keyword_input.text().strip())
+            if segment.strip()
+        ]
+        if not keywords:
+            raise ValueError("请输入至少一个微信号关键词。")
+        matched: list[dict[str, str]] = []
+        seen_targets: set[str] = set()
+        duplicate_removed = 0
+        for row in self.basic_source_records:
+            target_value = (row.get(DEFAULT_SEND_TARGET_COLUMN) or "").strip()
+            if not target_value:
+                continue
+            lower_target = target_value.lower()
+            if not any(keyword.lower() in lower_target for keyword in keywords):
+                continue
+            normalized_row = dict(row)
+            normalized_row[TARGET_VALUE_KEY] = target_value
+            normalized_row["_search_key"] = target_value
+            if target_value in seen_targets:
+                duplicate_removed += 1
+                continue
+            seen_targets.add(target_value)
+            matched.append(normalized_row)
+        return matched, len(matched) + duplicate_removed, duplicate_removed
+
+    def preview_basic_match_results(self) -> None:
+        try:
+            matched_rows, raw_total, duplicate_removed = self.build_basic_match_candidates()
+        except Exception as exc:
+            QMessageBox.warning(self, "匹配失败", str(exc))
+            return
+        self.basic_last_match_total = raw_total
+        self.basic_last_duplicate_removed = duplicate_removed
+        if not matched_rows:
+            self.basic_selected_records = []
+            self.basic_selected_summary_label.setText("当前关键词没有匹配到任何接收人。")
+            self.set_label_tone(self.basic_selected_summary_label, "warning")
+            self.basic_removed_summary_label.setText(f"去重移除：{duplicate_removed} 人")
+            self.set_label_tone(self.basic_removed_summary_label, "muted")
+            self.refresh_basic_selected_table()
+            self.update_basic_progress_status()
+            QMessageBox.information(self, "无匹配结果", "当前关键词没有匹配到任何微信号。")
+            return
+
+        dialog = ContactConfirmDialog(matched_rows, parent=self)
+        dialog.setWindowTitle("基本功能页匹配结果确认")
+        dialog.ok_btn.setText("确认接收人")
+        if dialog.exec_() != ContactConfirmDialog.Accepted:
+            return
+        confirmed_rows = dialog.get_confirmed_contacts()
+        if not confirmed_rows:
+            QMessageBox.information(self, "无选中", "没有勾选任何联系人。")
+            return
+        self.basic_selected_records = [dict(row) for row in confirmed_rows]
+        self.basic_removed_summary_label.setText(f"去重移除：{duplicate_removed} 人")
+        self.set_label_tone(self.basic_removed_summary_label, "muted")
+        self.invalidate_basic_task("已更新基本功能页接收人名单，续发进度已重置。")
+        self.refresh_basic_selected_table()
+        self.update_basic_progress_status()
+
+    def refresh_basic_selected_table(self) -> None:
+        if not hasattr(self, "basic_selected_table"):
+            return
+        if self.basic_task_id is not None:
+            records = self.local_store.load_task_records(self.basic_task_id)
+        else:
+            records = list(self.basic_selected_records)
+        self.basic_selected_table.setRowCount(len(records))
+        for row_index, row in enumerate(records):
+            target_value = str(row.get(TARGET_VALUE_KEY) or row.get(DEFAULT_SEND_TARGET_COLUMN) or "").strip()
+            display_name = self.get_display_name(row) or target_value
+            status_value = str(row.get(ROW_SEND_STATUS_KEY) or row.get("send_status") or "").strip().lower()
+            status_text = BASIC_SEND_STATUS_TEXT.get(status_value, "待发送")
+            self.basic_selected_table.setItem(row_index, 0, QTableWidgetItem(target_value))
+            self.basic_selected_table.setItem(row_index, 1, QTableWidgetItem(display_name))
+            self.basic_selected_table.setItem(row_index, 2, QTableWidgetItem(status_text))
+        self.basic_selected_table.resizeRowsToContents()
+
+        selected_count = len(records)
+        if selected_count:
+            self.basic_selected_summary_label.setText(f"本次已确认 {selected_count} 位接收人。")
+            self.set_label_tone(self.basic_selected_summary_label, "success")
+        else:
+            self.basic_selected_summary_label.setText("当前未选择接收人。")
+            self.set_label_tone(self.basic_selected_summary_label, "muted")
+
+    def update_basic_progress_status(self) -> None:
+        if not hasattr(self, "basic_progress_label"):
+            return
+        total_selected = len(self.basic_selected_records)
+        batch_limit = self.basic_batch_limit_spin.value() if hasattr(self, "basic_batch_limit_spin") else 0
+        if total_selected == 0:
+            self.basic_progress_label.setText("当前没有可发送任务。")
+            self.basic_runtime_status_label.setText("请先导入 Excel 并确认接收人。")
+            self.set_label_tone(self.basic_runtime_status_label, "muted")
+            return
+
+        remaining = total_selected
+        completed = 0
+        if self.basic_task_id is not None:
+            task_records = self.local_store.load_task_records(self.basic_task_id)
+            remaining = len(self.get_basic_pending_records(self.basic_task_id))
+            completed = max(len(task_records) - remaining, 0)
+        self.basic_progress_label.setText(
+            f"当前已确认 {total_selected} 人；本次计划发送 {min(batch_limit, remaining) if remaining else 0} 人；剩余 {remaining} 人。"
+        )
+        if remaining == 0:
+            self.basic_runtime_status_label.setText(f"当前名单已全部处理完成，共完成 {completed} 人。")
+            self.set_label_tone(self.basic_runtime_status_label, "success")
+        elif completed > 0:
+            self.basic_runtime_status_label.setText(
+                f"上一轮已完成 {completed} 人，剩余 {remaining} 人；再次点击发送会从剩余联系人继续。"
+            )
+            self.set_label_tone(self.basic_runtime_status_label, "warning")
+        else:
+            self.basic_runtime_status_label.setText("准备就绪，点击“发送”即可开始。")
+            self.set_label_tone(self.basic_runtime_status_label, "muted")
+        if hasattr(self, "basic_start_button"):
+            self.basic_start_button.setText("继续发送" if completed > 0 and remaining > 0 else "发送")
+
+    def refresh_basic_attachment_table(self) -> None:
+        if not hasattr(self, "basic_attachment_table"):
+            return
+        self.basic_attachment_table.setRowCount(len(self.basic_attachments))
+        for row_index, item in enumerate(self.basic_attachments):
+            self.basic_attachment_table.setItem(row_index, 0, QTableWidgetItem(str(item.get("file_type") or "")))
+            self.basic_attachment_table.setItem(row_index, 1, QTableWidgetItem(str(item.get("file_path") or "")))
+        self.basic_attachment_table.resizeRowsToContents()
+        self.basic_remove_attachment_button.setEnabled(bool(self.basic_attachments))
+        self.basic_clear_attachment_button.setEnabled(bool(self.basic_attachments))
+
+    def select_basic_attachments(self) -> None:
+        start_dir = (
+            self.config.get("json_tasks", {}).get("last_attachment_dir")
+            or self.config.get("json_tasks", {}).get("last_import_dir")
+            or ""
+        )
+        paths, _ = QFileDialog.getOpenFileNames(self, "选择附件", start_dir, "所有文件(*.*)")
+        if not paths:
+            return
+        self.config["json_tasks"]["last_attachment_dir"] = str(Path(paths[0]).parent)
+        self.save_config_if_ready()
+        self.basic_attachment_input.setText(";".join(paths))
+
+    def import_basic_attachments_from_input(self) -> None:
+        raw_value = self.basic_attachment_input.text().strip()
+        if raw_value == "":
+            QMessageBox.information(self, "未选择附件", "请先选择或拖入至少一个附件。")
+            return
+        try:
+            new_items = self.normalize_attachment_items(raw_value)
+        except Exception as exc:
+            QMessageBox.warning(self, "附件无效", str(exc))
+            return
+        existing_paths = {str(item.get("file_path") or "") for item in self.basic_attachments}
+        for item in new_items:
+            file_path = str(item.get("file_path") or "")
+            if file_path and file_path not in existing_paths:
+                self.basic_attachments.append(item)
+                existing_paths.add(file_path)
+        self.basic_attachment_input.clear()
+        self.refresh_basic_attachment_table()
+        self.save_basic_mode_config()
+        if self.basic_task_id is not None:
+            self.invalidate_basic_task("已修改基本功能页附件，续发进度已重置。")
+
+    def remove_selected_basic_attachments(self) -> None:
+        if not self.basic_attachments:
+            return
+        rows = sorted({index.row() for index in self.basic_attachment_table.selectionModel().selectedRows()}, reverse=True)
+        if not rows:
+            QMessageBox.information(self, "未选择附件", "请先选择要删除的附件。")
+            return
+        for row in rows:
+            if 0 <= row < len(self.basic_attachments):
+                self.basic_attachments.pop(row)
+        self.refresh_basic_attachment_table()
+        self.save_basic_mode_config()
+        if self.basic_task_id is not None:
+            self.invalidate_basic_task("已修改基本功能页附件，续发进度已重置。")
+
+    def clear_basic_attachments(self) -> None:
+        if not self.basic_attachments:
+            return
+        self.basic_attachments = []
+        self.refresh_basic_attachment_table()
+        self.save_basic_mode_config()
+        if self.basic_task_id is not None:
+            self.invalidate_basic_task("已修改基本功能页附件，续发进度已重置。")
+
+    def create_basic_task_snapshot(self) -> int:
+        rows: list[dict[str, Any]] = []
+        for row in self.basic_selected_records:
+            normalized_row = dict(row)
+            normalized_row[TARGET_VALUE_KEY] = str(
+                normalized_row.get(TARGET_VALUE_KEY) or normalized_row.get(DEFAULT_SEND_TARGET_COLUMN) or ""
+            ).strip()
+            rows.append(normalized_row)
+        return self.local_store.create_task_snapshot(
+            rows=rows,
+            filter_fields=DEFAULT_SEND_TARGET_COLUMN,
+            filter_pattern=self.basic_match_keyword_input.text().strip(),
+            target_column=DEFAULT_SEND_TARGET_COLUMN,
+            template_text=self.basic_message_input.toPlainText(),
+            source_batch_id=None,
+            source_mode=SOURCE_MODE_FILE,
+            dataset_type="",
+            common_attachments=[dict(item) for item in self.basic_attachments],
+        )
+
+    def ensure_basic_task_snapshot(self) -> int:
+        if self.basic_task_id is not None:
+            return self.basic_task_id
+        self.basic_task_id = self.create_basic_task_snapshot()
+        return self.basic_task_id
+
+    def get_basic_pending_records(self, task_id: int) -> list[dict[str, Any]]:
+        records = self.local_store.load_task_records(task_id)
+        if not records:
+            return []
+        if all(str(row.get("send_status") or "").strip() == "" for row in records):
+            return records
+        return self.build_resume_records(task_id)
+
+    def start_basic_send(self) -> None:
+        if self.send_thread is not None and self.send_thread.isRunning():
+            QMessageBox.information(self, "发送中", "当前已有发送任务正在执行。")
+            return
+        if not self.basic_selected_records:
+            QMessageBox.information(self, "无法发送", "请先导入 Excel 并确认接收人。")
+            return
+        message_text = self.basic_message_input.toPlainText().strip()
+        if not message_text and not self.basic_attachments:
+            QMessageBox.warning(self, "无法发送", "请输入消息内容，或至少选择一个附件。")
+            return
+        missing_fields = find_missing_fields(extract_placeholders(self.basic_message_input.toPlainText()), self.basic_columns)
+        if missing_fields:
+            QMessageBox.warning(self, "无法发送", f"消息中存在缺失列：{', '.join(missing_fields)}")
+            return
+
+        task_id = self.ensure_basic_task_snapshot()
+        pending_records = self.get_basic_pending_records(task_id)
+        if not pending_records:
+            QMessageBox.information(self, "无需继续", "当前接收人名单已经全部处理完成。")
+            self.update_basic_progress_status()
+            return
+
+        batch_limit = max(1, self.basic_batch_limit_spin.value())
+        batch_records = pending_records[:batch_limit]
+        reply = QMessageBox.question(
+            self,
+            "确认发送",
+            (
+                f"本次将发送 {len(batch_records)} 人。\n"
+                f"当前名单剩余 {len(pending_records)} 人待处理。\n"
+                "确认后会在达到本次人数上限后自动暂停。"
+            ),
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No,
+        )
+        if reply != QMessageBox.Yes:
+            return
+
+        self.current_send_origin = "basic"
+        self.current_send_batch_limit = batch_limit
+        self.current_send_remaining_before_start = len(pending_records)
+        task_details = self.local_store.get_task_details(task_id) or {}
+        self.launch_send_thread(
+            records=batch_records,
+            template_text=self.basic_message_input.toPlainText(),
+            target_column=TARGET_VALUE_KEY,
+            interval_seconds=self.basic_interval_spin.value(),
+            random_delay_min=0,
+            random_delay_max=0,
+            operator_name=self.operator_name_input.text().strip(),
+            report_to=self.report_to_input.text().strip() or DEFAULT_REPORT_TARGET,
+            auto_report=False,
+            scheduled_job=None,
+            task_id_override=task_id,
+            common_attachments_override=self.basic_attachments,
+            send_origin="basic",
+        )
+        self.basic_runtime_status_label.setText(
+            f"正在发送：本轮 {len(batch_records)} 人，当前总剩余 {len(pending_records)} 人。"
+        )
+        self.set_label_tone(self.basic_runtime_status_label, "warning")
 
     def on_local_store_tab_changed(self, _index: int) -> None:
         self.update_local_filter_scope()
@@ -1313,14 +2704,14 @@ class ExcelSenderGUI(QWidget):
         dataset_type = self.get_active_local_dataset_type()
         summary = self.local_store.get_current_import_summary(dataset_type)
         if summary is None:
-            self.local_filter_scope_label.setStyleSheet("color:#555;")
+            self.set_label_tone(self.local_filter_scope_label, "muted")
             self.local_filter_scope_label.setText(
                 f"当前筛选对象：{DATASET_LABELS[dataset_type]}库当前批次（暂无数据）。"
             )
             self.use_local_store_button.setEnabled(False)
             return
 
-        self.local_filter_scope_label.setStyleSheet("color:#027a48;")
+        self.set_label_tone(self.local_filter_scope_label, "success")
         self.local_filter_scope_label.setText(
             f"当前筛选对象：{summary.dataset_label}库当前批次，来源 {summary.source_name}，共 {summary.row_count} 行。"
         )
@@ -1578,6 +2969,10 @@ class ExcelSenderGUI(QWidget):
     def on_excel_path_changed(self, path: str) -> None:
         normalized_path = path.strip()
         self.config["excel"]["path"] = normalized_path
+        if hasattr(self, "basic_excel_path_input") and self.basic_excel_path_input.text().strip() != normalized_path:
+            self.basic_excel_path_input.blockSignals(True)
+            self.basic_excel_path_input.setText(normalized_path)
+            self.basic_excel_path_input.blockSignals(False)
         if normalized_path != self.loaded_excel_path and self.active_source_mode == SOURCE_MODE_FILE:
             self.records_loaded = False
         self.save_config_if_ready()
@@ -1619,6 +3014,10 @@ class ExcelSenderGUI(QWidget):
 
     def on_interval_changed(self, value: int) -> None:
         self.config["settings"]["send_interval"] = value
+        if hasattr(self, "basic_interval_spin") and self.basic_interval_spin.value() != value:
+            self.basic_interval_spin.blockSignals(True)
+            self.basic_interval_spin.setValue(value)
+            self.basic_interval_spin.blockSignals(False)
         self.save_config_if_ready()
 
     def on_bulk_send_option_changed(self, *_args) -> None:
@@ -2095,12 +3494,12 @@ class ExcelSenderGUI(QWidget):
             self.schedule_value_input.text().strip() if hasattr(self, "schedule_value_input") else "",
         )
         if is_scheduled:
-            self.schedule_status_label.setStyleSheet("color:#b54708;")
+            self.set_label_tone(self.schedule_status_label, "warning")
             self.schedule_status_label.setText(
                 f"当前为定时发送模式，计划时间：{self.scheduled_time_edit.dateTime().toString('yyyy-MM-dd HH:mm')}，频率：{recurrence_text}。"
             )
         else:
-            self.schedule_status_label.setStyleSheet("color:#555;")
+            self.set_label_tone(self.schedule_status_label, "muted")
             self.schedule_status_label.setText(f"当前为立即发送模式（导出/建队列时默认频率：{recurrence_text}）。")
         self.update_action_button_state()
 
@@ -2468,6 +3867,7 @@ class ExcelSenderGUI(QWidget):
             self.active_source_mode = SOURCE_MODE_FILE
             self.columns_view.clear()
             self.data_info_label.setText("读取失败。")
+            self.set_label_tone(self.filter_status_label, "warning")
             self.filter_status_label.setText("筛选配置待重新应用。")
             self.update_send_target_column_status()
             self.update_preview_headers()
@@ -2485,7 +3885,7 @@ class ExcelSenderGUI(QWidget):
             loaded_path=path,
             batch_id=None,
         )
-        self.filter_status_label.setStyleSheet("color:#555;")
+        self.set_label_tone(self.filter_status_label, "muted")
         self.filter_status_label.setText("文件读取完成；如需筛选，请先导入到本地库，再到“本地库数据”页创建发送计划。")
 
         if show_success:
@@ -2551,6 +3951,7 @@ class ExcelSenderGUI(QWidget):
             batch_ids=batch_ids,
         )
         self.ensure_local_filter_defaults()
+        self.set_label_tone(self.filter_status_label, "muted")
         self.filter_status_label.setText("已读取本地库数据，可在本页设置条件并导入发送计划。")
         self.refresh_local_store_page()
 
@@ -2574,7 +3975,7 @@ class ExcelSenderGUI(QWidget):
             if default_fields:
                 self.filter_fields_input.setText(",".join(default_fields))
         self.filter_pattern_input.setText("")
-        self.filter_status_label.setStyleSheet("color:#555;")
+        self.set_label_tone(self.filter_status_label, "muted")
         self.filter_status_label.setText(
             f"已重置{DATASET_LABELS[dataset_type]}库筛选条件，请重新筛选并导入发送计划。"
         )
@@ -2652,7 +4053,7 @@ class ExcelSenderGUI(QWidget):
 
         dataset_type, batch_id, columns, source_records, filtered_records, filter_fields_text, pattern_text = prepared
         if not filtered_records:
-            self.filter_status_label.setStyleSheet("color:#b54708;")
+            self.set_label_tone(self.filter_status_label, "warning")
             self.filter_status_label.setText(
                 f"{DATASET_LABELS[dataset_type]}库筛选结果为空，请调整筛选字段或正则规则。"
             )
@@ -2669,7 +4070,7 @@ class ExcelSenderGUI(QWidget):
         dialog.setWindowTitle(f"{DATASET_LABELS[dataset_type]}筛选结果确认")
         dialog.ok_btn.setText("导入发送计划")
         if dialog.exec_() != ContactConfirmDialog.Accepted:
-            self.filter_status_label.setStyleSheet("color:#555;")
+            self.set_label_tone(self.filter_status_label, "muted")
             self.filter_status_label.setText(
                 f"{DATASET_LABELS[dataset_type]}库筛选已生成候选名单，但尚未导入发送计划。"
             )
@@ -2709,7 +4110,7 @@ class ExcelSenderGUI(QWidget):
         self.records_loaded = True
         self.loaded_excel_path = ""
         self.columns_view.setPlainText("、".join(self.columns))
-        self.filter_status_label.setStyleSheet("color:#027a48;")
+        self.set_label_tone(self.filter_status_label, "success")
         self.filter_status_label.setText(
             f"{DATASET_LABELS[dataset_type]}库候选名单已导入发送计划：筛选 {len(filtered_records)} 行，最终确认 {len(self.records)} 行，任务快照 ID={task_id}。"
         )
@@ -2826,7 +4227,7 @@ class ExcelSenderGUI(QWidget):
 
         target_column = self.get_send_target_column()
         if not self.columns:
-            self.send_target_status_label.setStyleSheet("color:#555;")
+            self.set_label_tone(self.send_target_status_label, "muted")
             self.send_target_status_label.setText(
                 f"当前发送时会使用“{target_column}”列作为微信搜索关键词。"
             )
@@ -2835,26 +4236,26 @@ class ExcelSenderGUI(QWidget):
         valid_count = len([row for row in self.records if self.get_send_target_value(row)])
         if self.is_local_db_mode():
             if target_column in self.columns:
-                self.send_target_status_label.setStyleSheet("color:#027a48;")
+                self.set_label_tone(self.send_target_status_label, "success")
                 self.send_target_status_label.setText(
                     f"当前识别列为“{target_column}”，本地库已匹配 {valid_count} 行微信搜索关键词；群聊会在空值时自动回退。"
                 )
                 return
 
-            self.send_target_status_label.setStyleSheet("color:#b54708;")
+            self.set_label_tone(self.send_target_status_label, "warning")
             self.send_target_status_label.setText(
                 f"当前发送识别列“{target_column}”不在导入列中，本地库会按联系人类型自动回退，当前已匹配 {valid_count} 行。"
             )
             return
 
         if target_column not in self.columns:
-            self.send_target_status_label.setStyleSheet("color:#b42318;")
+            self.set_label_tone(self.send_target_status_label, "danger")
             self.send_target_status_label.setText(
                 f"当前发送识别列为“{target_column}”，但已读取的 Excel 中没有这列。"
             )
             return
 
-        self.send_target_status_label.setStyleSheet("color:#027a48;")
+        self.set_label_tone(self.send_target_status_label, "success")
         self.send_target_status_label.setText(
             f"当前发送识别列为“{target_column}”，已匹配 {valid_count} 行可发送数据。"
         )
@@ -2902,6 +4303,7 @@ class ExcelSenderGUI(QWidget):
         self.update_data_info_label()
         self.update_send_target_column_status()
         self.update_action_button_state()
+        self.set_label_tone(self.filter_status_label, "success")
         self.filter_status_label.setText(
             f"已应用正则筛选：字段={', '.join(fields)}，命中 {len(self.records)} / {len(self.source_records)} 行。"
         )
@@ -2920,6 +4322,7 @@ class ExcelSenderGUI(QWidget):
         self.update_data_info_label()
         self.update_send_target_column_status()
         self.update_action_button_state()
+        self.set_label_tone(self.filter_status_label, "muted")
         self.filter_status_label.setText("已重置筛选，当前显示全部发送数据。")
         self.append_log("已重置正则筛选，恢复全部发送数据。")
         self.render_preview()
@@ -2942,19 +4345,19 @@ class ExcelSenderGUI(QWidget):
         template = self.template_input.toPlainText()
         placeholders = extract_placeholders(template)
         if not placeholders:
-            self.placeholder_status_label.setStyleSheet("color:#555;")
+            self.set_label_tone(self.placeholder_status_label, "muted")
             self.placeholder_status_label.setText("当前模板未使用占位符，将向所有联系人发送相同内容。")
             return
 
         missing_fields = find_missing_fields(placeholders, self.columns)
         text = f"识别到占位符：{', '.join(placeholders)}"
         if missing_fields:
-            self.placeholder_status_label.setStyleSheet("color:#b42318;")
+            self.set_label_tone(self.placeholder_status_label, "danger")
             self.placeholder_status_label.setText(
                 text + f"\n缺少对应列：{', '.join(missing_fields)}"
             )
         else:
-            self.placeholder_status_label.setStyleSheet("color:#027a48;")
+            self.set_label_tone(self.placeholder_status_label, "success")
             self.placeholder_status_label.setText(
                 text + "\n所有占位符都能在 Excel 列中找到对应内容。"
             )
@@ -3140,26 +4543,54 @@ class ExcelSenderGUI(QWidget):
             return self.current_batch_ids.get(dataset_type)
         return None
 
-    def build_snapshot_rows(self, records: list[dict[str, str]]) -> list[dict[str, str]]:
+    def build_snapshot_rows(
+        self,
+        records: list[dict[str, str]],
+        *,
+        target_column: str | None = None,
+    ) -> list[dict[str, str]]:
         snapshot_rows: list[dict[str, str]] = []
         for row in records:
             snapshot_row = dict(row)
-            snapshot_row[TARGET_VALUE_KEY] = self.get_send_target_value(snapshot_row)
+            if target_column and target_column in snapshot_row:
+                snapshot_row[TARGET_VALUE_KEY] = str(snapshot_row.get(target_column) or "").strip()
+            elif TARGET_VALUE_KEY in snapshot_row:
+                snapshot_row[TARGET_VALUE_KEY] = str(snapshot_row.get(TARGET_VALUE_KEY) or "").strip()
+            else:
+                snapshot_row[TARGET_VALUE_KEY] = self.get_send_target_value(snapshot_row)
             snapshot_rows.append(snapshot_row)
         return snapshot_rows
 
-    def create_task_snapshot_from_records(self, records: list[dict[str, str]]) -> int:
-        dataset_type = self.get_current_dataset_type(records)
-        snapshot_rows = self.build_snapshot_rows(records)
+    def create_task_snapshot_from_records(
+        self,
+        records: list[dict[str, str]],
+        *,
+        filter_fields: str | None = None,
+        filter_pattern: str | None = None,
+        target_column: str | None = None,
+        template_text: str | None = None,
+        source_batch_id: int | None | object = ...,
+        source_mode: str | None = None,
+        dataset_type: str | None = None,
+        common_attachments: list[dict[str, str]] | None = None,
+    ) -> int:
+        resolved_dataset_type = self.get_current_dataset_type(records) if dataset_type is None else dataset_type
+        resolved_target_column = target_column or self.get_send_target_column()
+        snapshot_rows = self.build_snapshot_rows(records, target_column=resolved_target_column)
+        if source_batch_id is ...:
+            resolved_source_batch_id = self.get_source_batch_id_for_snapshot(resolved_dataset_type)
+        else:
+            resolved_source_batch_id = source_batch_id
         return self.local_store.create_task_snapshot(
             rows=snapshot_rows,
-            filter_fields=self.filter_fields_input.text().strip(),
-            filter_pattern=self.filter_pattern_input.text().strip(),
-            target_column=self.get_send_target_column(),
-            template_text=self.template_input.toPlainText(),
-            source_batch_id=self.get_source_batch_id_for_snapshot(dataset_type),
-            source_mode=self.active_source_mode,
-            dataset_type=dataset_type,
+            filter_fields=self.filter_fields_input.text().strip() if filter_fields is None else filter_fields,
+            filter_pattern=self.filter_pattern_input.text().strip() if filter_pattern is None else filter_pattern,
+            target_column=resolved_target_column,
+            template_text=self.template_input.toPlainText() if template_text is None else template_text,
+            source_batch_id=resolved_source_batch_id,
+            source_mode=self.active_source_mode if source_mode is None else source_mode,
+            dataset_type=resolved_dataset_type,
+            common_attachments=common_attachments,
         )
 
     def build_template_preview(self, records: list[dict[str, str]]) -> str:
@@ -3392,16 +4823,28 @@ class ExcelSenderGUI(QWidget):
         report_to: str,
         auto_report: bool,
         scheduled_job: ScheduledSendJob | None,
+        task_id_override: int | None = None,
+        common_attachments_override: list[dict[str, str]] | None = None,
+        send_origin: str = "classic",
     ) -> None:
-        task_id = scheduled_job.task_id if scheduled_job is not None else self.current_task_id
+        task_id = task_id_override if task_id_override is not None else (scheduled_job.task_id if scheduled_job is not None else self.current_task_id)
         if task_id is None:
-            task_id = self.create_task_snapshot_from_records(records)
+            task_id = self.create_task_snapshot_from_records(
+                records,
+                target_column=target_column,
+                template_text=template_text,
+                common_attachments=common_attachments_override,
+            )
             self.current_task_id = task_id
 
         task_details = self.local_store.get_task_details(task_id)
-        common_attachments = self.common_attachments
+        common_attachments = [dict(item) for item in (common_attachments_override or self.common_attachments)]
         if task_details is not None and task_details.get("common_attachments_json"):
-            common_attachments = self.normalize_attachment_items(task_details["common_attachments_json"])
+            common_attachments = (
+                [dict(item) for item in common_attachments_override]
+                if common_attachments_override is not None
+                else self.normalize_attachment_items(task_details["common_attachments_json"])
+            )
 
         source_json_path = ""
         if scheduled_job is not None:
@@ -3418,6 +4861,7 @@ class ExcelSenderGUI(QWidget):
             log_path = self.resolve_runtime_log_path(task_id, source_json_path)
 
         self.active_scheduled_job = scheduled_job
+        self.current_send_origin = send_origin
         self.current_runtime_task_id = task_id
         self.current_runtime_records = [dict(row) for row in records]
         self.current_runtime_source_json_path = source_json_path
@@ -3463,6 +4907,12 @@ class ExcelSenderGUI(QWidget):
         self.import_local_button.setEnabled(False)
         self.preview_table.setEnabled(False)
         self.debug_mode_button.setEnabled(False)
+        if hasattr(self, "basic_start_button"):
+            self.basic_start_button.setEnabled(False)
+        if hasattr(self, "basic_stop_button"):
+            self.basic_stop_button.setEnabled(True)
+        if hasattr(self, "basic_load_button"):
+            self.basic_load_button.setEnabled(False)
         self.send_status_label.setText("发送中...")
         self.open_send_prepare_page()
         if scheduled_job is not None:
@@ -3471,6 +4921,8 @@ class ExcelSenderGUI(QWidget):
             start_message = f"开始执行本地库任务快照发送，任务ID={self.current_task_id}。"
         elif self.active_source_mode == SOURCE_MODE_JSON:
             start_message = f"开始执行 JSON 任务发送，任务ID={task_id}。"
+        elif send_origin == "basic":
+            start_message = f"开始执行基本功能页发送，任务ID={task_id}。"
         else:
             start_message = "开始执行 Excel 个性化群发。"
         if self.is_debug_mode_enabled():
@@ -3484,7 +4936,12 @@ class ExcelSenderGUI(QWidget):
         if self.send_thread is not None and self.send_thread.isRunning():
             self.send_thread.request_stop()
             self.stop_button.setEnabled(False)
+            if hasattr(self, "basic_stop_button"):
+                self.basic_stop_button.setEnabled(False)
             self.send_status_label.setText("正在停止...")
+            if self.current_send_origin == "basic":
+                self.basic_runtime_status_label.setText("正在停止当前批次，请稍候...")
+                self.set_label_tone(self.basic_runtime_status_label, "warning")
             self.append_log("已收到停止请求，将在当前联系人到达安全停止点后尽快终止。")
 
     def on_send_progress(self, current: int, total: int, wechat_id: str) -> None:
@@ -3527,6 +4984,24 @@ class ExcelSenderGUI(QWidget):
             message += "\n状态：已手动停止"
         else:
             message += "\n状态：已完成"
+
+        if self.current_send_origin == "basic" and self.basic_task_id is not None:
+            remaining = len(self.get_basic_pending_records(self.basic_task_id))
+            if not summary.get("error") and not summary.get("stopped_by_error") and not summary.get("stopped") and remaining > 0:
+                message += f"\n状态：已达到本次发送人数上限，剩余 {remaining} 人待继续"
+                self.basic_runtime_status_label.setText(f"本轮已完成，剩余 {remaining} 人。再次点击发送会从剩余联系人继续。")
+                self.set_label_tone(self.basic_runtime_status_label, "warning")
+            elif remaining == 0 and not summary.get("error"):
+                self.basic_runtime_status_label.setText("当前接收人名单已全部处理完成。")
+                self.set_label_tone(self.basic_runtime_status_label, "success")
+            elif summary.get("stopped"):
+                self.basic_runtime_status_label.setText("已手动停止当前批次，可再次点击发送继续剩余联系人。")
+                self.set_label_tone(self.basic_runtime_status_label, "warning")
+            else:
+                self.basic_runtime_status_label.setText("本轮发送出现异常，请处理后再决定是否继续。")
+                self.set_label_tone(self.basic_runtime_status_label, "danger")
+            self.refresh_basic_selected_table()
+            self.update_basic_progress_status()
 
         self.send_status_label.setText("发送结束。")
         self.append_log("发送任务结束。")
@@ -3573,14 +5048,27 @@ class ExcelSenderGUI(QWidget):
         self.import_local_button.setEnabled(True)
         self.preview_table.setEnabled(True)
         self.debug_mode_button.setEnabled(True)
+        if hasattr(self, "basic_start_button"):
+            self.basic_start_button.setEnabled(True)
+        if hasattr(self, "basic_stop_button"):
+            self.basic_stop_button.setEnabled(False)
+        if hasattr(self, "basic_load_button"):
+            self.basic_load_button.setEnabled(True)
         self.send_thread = None
         self.active_scheduled_job = None
         self.current_runtime_task_id = None
         self.current_runtime_records = []
         self.current_runtime_source_json_path = ""
         self.current_runtime_log_path = ""
+        self.current_send_batch_limit = None
+        self.current_send_remaining_before_start = 0
+        previous_origin = self.current_send_origin
+        self.current_send_origin = "classic"
         self.refresh_scheduled_jobs()
         self.update_action_button_state()
+        if previous_origin == "basic":
+            self.refresh_basic_selected_table()
+            self.update_basic_progress_status()
 
     def append_log(self, message: str) -> None:
         self.log_view.appendPlainText(message)
@@ -3804,11 +5292,28 @@ class ExcelSenderGUI(QWidget):
             root_layout.activate()
         self.updateGeometry()
         self.main_tabs.updateGeometry()
-        for widget in (self.data_template_page, self.local_store_page, self.send_prepare_page, self.task_center_page):
+        for widget in (
+            self.workbench_page,
+            self.basic_page,
+            self.data_template_page,
+            self.local_store_page,
+            self.send_prepare_page,
+            self.task_center_page,
+        ):
             child_layout = widget.layout()
             if child_layout is not None:
                 child_layout.activate()
             widget.updateGeometry()
+        for table_name in (
+            "preview_table",
+            "schedule_table",
+            "basic_selected_table",
+            "basic_attachment_table",
+            "common_attachment_table",
+        ):
+            table = getattr(self, table_name, None)
+            if isinstance(table, QTableWidget):
+                self.apply_table_header_font(table)
 
         width = max(self.width(), self.minimumWidth())
         height = max(self.height(), self.minimumHeight())
