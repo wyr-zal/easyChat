@@ -12,6 +12,7 @@ from PyQt5.QtWidgets import QApplication
 from PyQt5.QtWidgets import QHeaderView
 from PyQt5.QtWidgets import QMessageBox
 from PyQt5.QtWidgets import QPushButton
+from PyQt5.QtWidgets import QSplitter
 
 from excel_sender_gui import ExcelSenderGUI
 from local_contact_store import LocalContactStore, SOURCE_MODE_JSON, SCHEDULE_STATUS_FAILED
@@ -134,10 +135,29 @@ class ExcelSenderGuiRuntimeTests(unittest.TestCase):
                 window.show()
                 self.app.processEvents()
                 self.assertEqual(window.data_template_splitter.orientation(), Qt.Horizontal)
+                self.assertEqual(window._registered_splitters["data_template.excel"].orientation(), Qt.Vertical)
+                self.assertEqual(window._registered_splitters["data_template.template"].orientation(), Qt.Vertical)
                 self.assertTrue(window.columns_empty_label.isVisible())
                 self.assertFalse(window.columns_view.isVisible())
                 self.assertTrue(window.common_attachment_empty_label.isVisible())
                 self.assertFalse(window.common_attachment_table.isVisible())
+            finally:
+                window.close()
+
+    def test_workbench_uses_nested_splitters_for_horizontal_and_vertical_resize(self) -> None:
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp_dir:
+            tmp = Path(tmp_dir)
+            window = self.create_window(tmp)
+            try:
+                self.assertIsInstance(window.basic_splitter, QSplitter)
+                self.assertEqual(window.basic_splitter.orientation(), Qt.Horizontal)
+                self.assertEqual(window.basic_left_splitter.orientation(), Qt.Vertical)
+                self.assertEqual(window.basic_right_splitter.orientation(), Qt.Vertical)
+                self.assertEqual(window.send_prepare_splitter.orientation(), Qt.Horizontal)
+                self.assertEqual(window.send_prepare_left_splitter.orientation(), Qt.Vertical)
+                self.assertEqual(window.task_center_splitter.orientation(), Qt.Horizontal)
+                self.assertEqual(window._registered_splitters["task_center.schedule"].orientation(), Qt.Vertical)
+                self.assertEqual(window._registered_splitters["local_store.dataset_shell"].orientation(), Qt.Vertical)
             finally:
                 window.close()
 
@@ -466,20 +486,90 @@ class ExcelSenderGuiRuntimeTests(unittest.TestCase):
                 self.app.processEvents()
 
                 receiver_height_before = window.basic_receiver_group.height()
-                attachment_y_before = window.basic_attachment_group.y()
-                send_y_before = window.basic_send_group.y()
-                right_panel_height_before = window.basic_right_layout.parentWidget().height()
+                right_sizes_before = window.basic_right_splitter.sizes()
 
                 window.basic_section_toggle_buttons["receiver"].click()
                 self.app.processEvents()
+                right_sizes_after = window.basic_right_splitter.sizes()
 
                 self.assertTrue(window.basic_section_content_widgets["receiver"].isHidden())
                 self.assertLess(window.basic_receiver_group.height(), receiver_height_before)
-                self.assertLess(window.basic_attachment_group.y(), attachment_y_before)
-                self.assertLess(window.basic_send_group.y(), send_y_before)
-                self.assertLess(window.basic_right_layout.parentWidget().height(), right_panel_height_before)
+                self.assertLess(right_sizes_after[0], right_sizes_before[0])
+                self.assertGreater(right_sizes_after[1] + right_sizes_after[2], right_sizes_before[1] + right_sizes_before[2])
             finally:
                 window.close()
+
+    def test_vertical_splitter_resize_changes_basic_section_heights(self) -> None:
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp_dir:
+            tmp = Path(tmp_dir)
+            window = self.create_window(tmp)
+            try:
+                window.show()
+                window.resize(1380, 920)
+                self.app.processEvents()
+
+                initial_heights = (
+                    window.basic_receiver_group.height(),
+                    window.basic_attachment_group.height(),
+                    window.basic_send_group.height(),
+                )
+                window.basic_right_splitter.setSizes([430, 150, 120])
+                self.app.processEvents()
+                first_resize_heights = (
+                    window.basic_receiver_group.height(),
+                    window.basic_attachment_group.height(),
+                    window.basic_send_group.height(),
+                )
+                window.basic_right_splitter.setSizes([220, 260, 220])
+                self.app.processEvents()
+                second_resize_heights = (
+                    window.basic_receiver_group.height(),
+                    window.basic_attachment_group.height(),
+                    window.basic_send_group.height(),
+                )
+
+                self.assertNotEqual(initial_heights, first_resize_heights)
+                self.assertNotEqual(first_resize_heights, second_resize_heights)
+                self.assertGreater(first_resize_heights[0], first_resize_heights[1])
+                self.assertGreater(second_resize_heights[1], first_resize_heights[1])
+            finally:
+                window.close()
+
+    def test_splitter_sizes_persist_after_restart(self) -> None:
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp_dir:
+            tmp = Path(tmp_dir)
+            window = self.create_window(tmp)
+            try:
+                window.show()
+                window.resize(1460, 960)
+                self.app.processEvents()
+                window.basic_right_splitter.setSizes([420, 160, 120])
+                window.send_prepare_left_splitter.setSizes([200, 520])
+                window.save_registered_splitter_states()
+            finally:
+                window.close()
+
+            config_data = json.loads((tmp / "excel-sender-test-config.json").read_text(encoding="utf-8"))
+            saved_splitters = config_data["ui"]["splitter_sizes"]
+            self.assertIn("workbench.basic.right", saved_splitters)
+            self.assertIn("workbench.send.left", saved_splitters)
+
+            reopened = self.create_window(tmp)
+            try:
+                reopened.show()
+                reopened.resize(1460, 960)
+                reopened.open_send_prepare_page()
+                self.app.processEvents()
+
+                basic_sizes = reopened.basic_right_splitter.sizes()
+                send_sizes = reopened.send_prepare_left_splitter.sizes()
+                self.assertEqual(len(basic_sizes), 3)
+                self.assertEqual(len(send_sizes), 2)
+                self.assertGreater(basic_sizes[0], basic_sizes[1])
+                self.assertGreater(basic_sizes[1], basic_sizes[2])
+                self.assertLess(send_sizes[0], send_sizes[1])
+            finally:
+                reopened.close()
 
     def test_debug_mode_button_state_persists_after_restart(self) -> None:
         with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp_dir:

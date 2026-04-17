@@ -293,6 +293,8 @@ class ExcelSenderGUI(QWidget):
         self.basic_section_title_labels: dict[str, QLabel] = {}
         self.basic_section_toggle_buttons: dict[str, QToolButton] = {}
         self.basic_section_content_widgets: dict[str, QWidget] = {}
+        self._registered_splitters: dict[str, QSplitter] = {}
+        self._splitter_default_sizes: dict[str, list[int]] = {}
         self._theme_mode = str(self.config.get("settings", {}).get("theme_mode") or THEME_MODE_AUTO)
         self._resolved_theme = THEME_MODE_LIGHT
         self._theme_tokens = dict(THEME_PALETTES[THEME_MODE_LIGHT])
@@ -305,6 +307,10 @@ class ExcelSenderGUI(QWidget):
         self.theme_timer = QTimer(self)
         self.theme_timer.setInterval(60_000)
         self.theme_timer.timeout.connect(self.on_theme_timer_timeout)
+        self.splitter_state_save_timer = QTimer(self)
+        self.splitter_state_save_timer.setSingleShot(True)
+        self.splitter_state_save_timer.setInterval(250)
+        self.splitter_state_save_timer.timeout.connect(self.save_registered_splitter_states)
 
         self.init_ui()
         self.restore_initial_state()
@@ -435,6 +441,9 @@ class ExcelSenderGUI(QWidget):
             changed = True
         if "advanced_settings_expanded" not in ui_config:
             ui_config["advanced_settings_expanded"] = False
+            changed = True
+        if "splitter_sizes" not in ui_config or not isinstance(ui_config.get("splitter_sizes"), dict):
+            ui_config["splitter_sizes"] = {}
             changed = True
 
         if changed:
@@ -589,6 +598,119 @@ class ExcelSenderGUI(QWidget):
         self.apply_semantic_widget_style(line)
         return line
 
+    def configure_splitter_pane(
+        self,
+        widget: QWidget,
+        *,
+        min_height: int = 0,
+        min_width: int = 0,
+        vertical_policy: QSizePolicy.Policy = QSizePolicy.Expanding,
+    ) -> QWidget:
+        widget.setProperty("splitterMinHeight", max(0, int(min_height)))
+        widget.setProperty("splitterMinWidth", max(0, int(min_width)))
+        if min_height > 0:
+            widget.setMinimumHeight(min_height)
+        if min_width > 0:
+            widget.setMinimumWidth(min_width)
+        widget.setSizePolicy(QSizePolicy.Preferred, vertical_policy)
+        return widget
+
+    def build_section_panel(
+        self,
+        *,
+        parent: QWidget,
+        title: str,
+        hint: str | None = None,
+        content: QWidget | None = None,
+        spacing: int = 8,
+    ) -> QWidget:
+        panel = self.build_panel_card(parent)
+        layout = QVBoxLayout(panel)
+        layout.setContentsMargins(14, 14, 14, 14)
+        layout.setSpacing(spacing)
+
+        title_label = QLabel(title, panel)
+        self.style_section_title_label(title_label)
+        layout.addWidget(title_label)
+
+        if hint:
+            hint_label = QLabel(hint, panel)
+            hint_label.setWordWrap(True)
+            self.style_helper_label(hint_label, color="#555")
+            layout.addWidget(hint_label)
+
+        if content is not None:
+            layout.addWidget(content, stretch=1)
+        return panel
+
+    def build_splitter(
+        self,
+        orientation: Qt.Orientation,
+        widgets: list[QWidget],
+        *,
+        parent: QWidget,
+        stretch_factors: list[int] | None = None,
+        splitter_key: str | None = None,
+        default_sizes: list[int] | None = None,
+    ) -> QSplitter:
+        splitter = QSplitter(orientation, parent)
+        splitter.setHandleWidth(6)
+        splitter.setOpaqueResize(True)
+        splitter.setChildrenCollapsible(False)
+        for index, widget in enumerate(widgets):
+            splitter.addWidget(widget)
+            if stretch_factors and index < len(stretch_factors):
+                splitter.setStretchFactor(index, stretch_factors[index])
+        if splitter_key:
+            self.register_splitter_state(splitter_key, splitter, default_sizes=default_sizes)
+        elif default_sizes:
+            splitter.setProperty("defaultSizes", list(default_sizes))
+        return splitter
+
+    def register_splitter_state(
+        self,
+        splitter_key: str,
+        splitter: QSplitter,
+        *,
+        default_sizes: list[int] | None = None,
+    ) -> None:
+        self._registered_splitters[splitter_key] = splitter
+        if default_sizes:
+            self._splitter_default_sizes[splitter_key] = [max(0, int(size)) for size in default_sizes]
+        splitter.splitterMoved.connect(lambda _pos, _index, key=splitter_key: self.on_splitter_moved(key))
+
+    def on_splitter_moved(self, _splitter_key: str) -> None:
+        if self._is_restoring_state:
+            return
+        self.splitter_state_save_timer.start()
+
+    def save_registered_splitter_states(self) -> None:
+        ui_config = self.config.setdefault("ui", {})
+        splitter_sizes = ui_config.setdefault("splitter_sizes", {})
+        for splitter_key, splitter in self._registered_splitters.items():
+            sizes = [max(0, int(size)) for size in splitter.sizes()]
+            if len(sizes) == splitter.count():
+                splitter_sizes[splitter_key] = sizes
+        self.save_config_if_ready()
+
+    def restore_registered_splitter_states(self) -> None:
+        ui_config = self.config.setdefault("ui", {})
+        raw_states = ui_config.get("splitter_sizes") if isinstance(ui_config.get("splitter_sizes"), dict) else {}
+        for splitter_key, splitter in self._registered_splitters.items():
+            target_sizes: list[int] | None = None
+            raw_sizes = raw_states.get(splitter_key) if isinstance(raw_states, dict) else None
+            if isinstance(raw_sizes, list) and len(raw_sizes) == splitter.count():
+                try:
+                    target_sizes = [max(0, int(size)) for size in raw_sizes]
+                except (TypeError, ValueError):
+                    target_sizes = None
+            if target_sizes is None:
+                default_sizes = self._splitter_default_sizes.get(splitter_key)
+                if default_sizes and len(default_sizes) == splitter.count():
+                    target_sizes = list(default_sizes)
+            if target_sizes:
+                splitter.setSizes(target_sizes)
+
     def resolve_semantic_tone(self, color: str | None) -> str:
         if not color:
             return "default"
@@ -671,6 +793,50 @@ class ExcelSenderGUI(QWidget):
         header.style().unpolish(header)
         header.style().polish(header)
         header.update()
+
+    def configure_resizable_table_columns(
+        self,
+        table: QTableWidget | None,
+        *,
+        initial_widths: list[int] | tuple[int, ...] | None = None,
+        signature: str | None = None,
+        min_section_size: int = 56,
+        auto_fit_on_signature_change: bool = False,
+        max_auto_width: int = 360,
+        auto_fit_padding: int = 18,
+    ) -> None:
+        if table is None:
+            return
+        header = table.horizontalHeader()
+        header.setStretchLastSection(False)
+        header.setMinimumSectionSize(max(40, int(min_section_size)))
+        for index in range(table.columnCount()):
+            header.setSectionResizeMode(index, QHeaderView.Interactive)
+
+        resolved_signature = signature or "|".join(
+            table.horizontalHeaderItem(index).text() if table.horizontalHeaderItem(index) else str(index)
+            for index in range(table.columnCount())
+        )
+        previous_signature = str(table.property("columnWidthSignature") or "")
+        should_apply_initial_widths = previous_signature != resolved_signature
+
+        if should_apply_initial_widths:
+            if initial_widths:
+                for index, width in enumerate(initial_widths):
+                    if index >= table.columnCount():
+                        break
+                    if width:
+                        table.setColumnWidth(index, max(int(width), header.minimumSectionSize()))
+            elif auto_fit_on_signature_change and table.columnCount() > 0:
+                table.resizeColumnsToContents()
+                for index in range(table.columnCount()):
+                    fitted_width = min(
+                        max(table.columnWidth(index) + int(auto_fit_padding), header.minimumSectionSize()),
+                        int(max_auto_width),
+                    )
+                    table.setColumnWidth(index, fitted_width)
+
+        table.setProperty("columnWidthSignature", resolved_signature)
 
     def resolve_theme_mode(self) -> str:
         mode = str(self._theme_mode or THEME_MODE_AUTO).strip().lower()
@@ -1029,30 +1195,39 @@ class ExcelSenderGUI(QWidget):
         content_widget = self.basic_section_content_widgets.get(section_key)
         if content_widget is not None:
             content_widget.setVisible(expanded)
+        group = self.basic_section_groups.get(section_key)
+        if group is not None:
+            default_min_height = max(0, int(group.property("splitterMinHeight") or 0))
+            if expanded:
+                group.setMinimumHeight(default_min_height)
+                group.setMaximumHeight(16777215)
+            else:
+                group.adjustSize()
+                collapsed_height = max(group.sizeHint().height(), 52)
+                group.setMinimumHeight(collapsed_height)
+                group.setMaximumHeight(collapsed_height)
 
     def set_basic_section_expanded(self, section_key: str, expanded: bool) -> None:
         self.apply_basic_section_state(section_key, expanded)
         self.refresh_basic_section_layout()
 
     def refresh_basic_section_layout(self) -> None:
-        if not hasattr(self, "basic_left_layout") or not hasattr(self, "basic_right_layout"):
+        if not hasattr(self, "basic_left_splitter") or not hasattr(self, "basic_right_splitter"):
             return
-        self.apply_basic_column_stretch(
-            self.basic_left_layout,
+        self.apply_basic_splitter_sizes(
+            self.basic_left_splitter,
             [
-                ("import", getattr(self, "basic_import_group", None), 0),
+                ("import", getattr(self, "basic_import_group", None), 1),
                 ("message", getattr(self, "basic_message_group", None), 2),
             ],
-            getattr(self, "basic_left_spacer_index", -1),
         )
-        self.apply_basic_column_stretch(
-            self.basic_right_layout,
+        self.apply_basic_splitter_sizes(
+            self.basic_right_splitter,
             [
                 ("receiver", getattr(self, "basic_receiver_group", None), 3),
                 ("attachment", getattr(self, "basic_attachment_group", None), 2),
-                ("send", getattr(self, "basic_send_group", None), 0),
+                ("send", getattr(self, "basic_send_group", None), 1),
             ],
-            getattr(self, "basic_right_spacer_index", -1),
         )
 
         for section_key in ("import", "message", "receiver", "attachment", "send"):
@@ -1063,24 +1238,43 @@ class ExcelSenderGUI(QWidget):
             self.basic_page.updateGeometry()
             self.basic_page.adjustSize()
 
-    def apply_basic_column_stretch(
+    def apply_basic_splitter_sizes(
         self,
-        layout: QVBoxLayout,
+        splitter: QSplitter,
         sections: list[tuple[str, QGroupBox | None, int]],
-        spacer_index: int,
     ) -> None:
-        has_expandable_visible_section = False
+        available_height = splitter.size().height()
+        if available_height <= 0:
+            available_height = sum(max(0, int(group.property("splitterMinHeight") or 0)) for _, group, _ in sections if group is not None)
+        sizes: list[int] = []
+        expandable_indices: list[tuple[int, int]] = []
         for index, (section_key, group, expanded_stretch) in enumerate(sections):
             if group is None:
+                sizes.append(0)
                 continue
             content_widget = self.basic_section_content_widgets.get(section_key)
             expanded = content_widget is None or not content_widget.isHidden()
-            stretch = expanded_stretch if expanded else 0
-            layout.setStretch(index, stretch)
-            if stretch > 0:
-                has_expandable_visible_section = True
-        if spacer_index >= 0:
-            layout.setStretch(spacer_index, 0 if has_expandable_visible_section else 1)
+            if expanded:
+                minimum = max(int(group.property("splitterMinHeight") or 0), group.sizeHint().height())
+                sizes.append(minimum)
+                if expanded_stretch > 0:
+                    expandable_indices.append((index, expanded_stretch))
+            else:
+                collapsed_height = max(group.sizeHint().height(), 52)
+                sizes.append(collapsed_height)
+
+        extra_height = max(0, available_height - sum(sizes))
+        if expandable_indices and extra_height > 0:
+            total_weight = sum(weight for _, weight in expandable_indices)
+            for index, weight in expandable_indices:
+                sizes[index] += int(extra_height * weight / total_weight)
+            remainder = max(0, available_height - sum(sizes))
+            for index, _weight in expandable_indices:
+                if remainder <= 0:
+                    break
+                sizes[index] += 1
+                remainder -= 1
+        splitter.setSizes(sizes)
 
     def navigate_to(self, page_key: str, workbench_view: str | None = None, *, persist: bool = True) -> None:
         page_map = {
@@ -1287,14 +1481,14 @@ class ExcelSenderGUI(QWidget):
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(10)
 
-        self.data_template_splitter = QSplitter(Qt.Horizontal, page)
-        self.data_template_splitter.setHandleWidth(6)
-        self.data_template_splitter.setOpaqueResize(True)
-        self.data_template_splitter.setChildrenCollapsible(False)
-        self.data_template_splitter.addWidget(self.build_excel_group())
-        self.data_template_splitter.addWidget(self.build_template_group())
-        self.data_template_splitter.setStretchFactor(0, 4)
-        self.data_template_splitter.setStretchFactor(1, 5)
+        self.data_template_splitter = self.build_splitter(
+            Qt.Horizontal,
+            [self.build_excel_group(), self.build_template_group()],
+            parent=page,
+            stretch_factors=[4, 5],
+            splitter_key="data_template.main",
+            default_sizes=[520, 640],
+        )
         layout.addWidget(self.data_template_splitter, stretch=1)
         return page
 
@@ -1304,22 +1498,21 @@ class ExcelSenderGUI(QWidget):
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(10)
 
-        splitter = QSplitter(Qt.Horizontal, page)
-        splitter.setHandleWidth(6)
-        splitter.setOpaqueResize(True)
-        splitter.setChildrenCollapsible(False)
-
         left_panel = QWidget(page)
         left_layout = QVBoxLayout(left_panel)
         left_layout.setContentsMargins(0, 0, 0, 0)
         left_layout.setSpacing(10)
         self.basic_import_group = self.build_basic_import_group()
         self.basic_message_group = self.build_basic_message_group()
-        left_layout.addWidget(self.basic_import_group)
-        left_layout.addWidget(self.basic_message_group)
-        left_layout.addStretch(0)
-        self.basic_left_layout = left_layout
-        self.basic_left_spacer_index = left_layout.count() - 1
+        self.basic_left_splitter = self.build_splitter(
+            Qt.Vertical,
+            [self.basic_import_group, self.basic_message_group],
+            parent=left_panel,
+            stretch_factors=[1, 2],
+            splitter_key="workbench.basic.left",
+            default_sizes=[180, 360],
+        )
+        left_layout.addWidget(self.basic_left_splitter, stretch=1)
 
         right_panel = QWidget(page)
         right_layout = QVBoxLayout(right_panel)
@@ -1328,22 +1521,25 @@ class ExcelSenderGUI(QWidget):
         self.basic_receiver_group = self.build_basic_receiver_group()
         self.basic_attachment_group = self.build_basic_attachment_group()
         self.basic_send_group = self.build_basic_send_group()
-        right_layout.addWidget(self.basic_receiver_group)
-        right_layout.addWidget(self.basic_attachment_group)
-        right_layout.addWidget(self.basic_send_group)
-        right_layout.addStretch(0)
-        self.basic_right_layout = right_layout
-        self.basic_right_spacer_index = right_layout.count() - 1
+        self.basic_right_splitter = self.build_splitter(
+            Qt.Vertical,
+            [self.basic_receiver_group, self.basic_attachment_group, self.basic_send_group],
+            parent=right_panel,
+            stretch_factors=[3, 2, 1],
+            splitter_key="workbench.basic.right",
+            default_sizes=[300, 180, 170],
+        )
+        right_layout.addWidget(self.basic_right_splitter, stretch=1)
 
-        basic_splitter = QSplitter(Qt.Horizontal, page)
-        basic_splitter.setHandleWidth(6)
-        basic_splitter.setOpaqueResize(True)
-        basic_splitter.setChildrenCollapsible(False)
-        basic_splitter.addWidget(self.build_scroll_area(left_panel))
-        basic_splitter.addWidget(self.build_scroll_area(right_panel))
-        basic_splitter.setStretchFactor(0, 4)
-        basic_splitter.setStretchFactor(1, 5)
-        layout.addWidget(basic_splitter, stretch=1)
+        self.basic_splitter = self.build_splitter(
+            Qt.Horizontal,
+            [self.build_scroll_area(left_panel), self.build_scroll_area(right_panel)],
+            parent=page,
+            stretch_factors=[4, 5],
+            splitter_key="workbench.basic.main",
+            default_sizes=[520, 650],
+        )
+        layout.addWidget(self.basic_splitter, stretch=1)
         self.refresh_basic_section_layout()
         return page
 
@@ -1359,6 +1555,7 @@ class ExcelSenderGUI(QWidget):
     def build_basic_import_group(self) -> QGroupBox:
         group = QGroupBox("1. 导入数据")
         layout = self.init_basic_collapsible_group(group, "import")
+        self.configure_splitter_pane(group, min_height=150, vertical_policy=QSizePolicy.Preferred)
 
         path_layout = QHBoxLayout()
         self.basic_excel_path_input = FileDropLineEdit(
@@ -1393,6 +1590,7 @@ class ExcelSenderGUI(QWidget):
         group = QGroupBox("2. 选择微信接收人")
         group.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Expanding)
         layout = self.init_basic_collapsible_group(group, "receiver")
+        self.configure_splitter_pane(group, min_height=240)
 
         filter_row = QHBoxLayout()
         filter_row.setSpacing(8)
@@ -1438,15 +1636,12 @@ class ExcelSenderGUI(QWidget):
         self.basic_selected_table.setEditTriggers(QAbstractItemView.NoEditTriggers)
         self.basic_selected_table.setTextElideMode(Qt.ElideMiddle)
         self.basic_selected_table.setAlternatingRowColors(True)
-        header = self.basic_selected_table.horizontalHeader()
-        header.setSectionResizeMode(0, QHeaderView.Interactive)
-        header.setSectionResizeMode(1, QHeaderView.Interactive)
-        header.setSectionResizeMode(2, QHeaderView.Interactive)
-        header.setStretchLastSection(False)
-        header.setMinimumSectionSize(72)
-        self.basic_selected_table.setColumnWidth(0, 170)
-        self.basic_selected_table.setColumnWidth(1, 420)
-        self.basic_selected_table.setColumnWidth(2, 120)
+        self.configure_resizable_table_columns(
+            self.basic_selected_table,
+            initial_widths=[170, 420, 120],
+            signature="basic_selected_table",
+            min_section_size=72,
+        )
         self.basic_selected_table.verticalHeader().setDefaultSectionSize(36)
         self.basic_selected_table.verticalHeader().setMinimumSectionSize(32)
         self.basic_selected_table.setMinimumHeight(150)
@@ -1473,6 +1668,7 @@ class ExcelSenderGUI(QWidget):
         group = QGroupBox("3. 消息内容")
         group.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Expanding)
         layout = self.init_basic_collapsible_group(group, "message")
+        self.configure_splitter_pane(group, min_height=220)
 
         variable_row = QHBoxLayout()
         variable_row.addWidget(QLabel("可插入变量"))
@@ -1501,6 +1697,7 @@ class ExcelSenderGUI(QWidget):
         group = QGroupBox("4. 附件（可多个）")
         group.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Expanding)
         layout = self.init_basic_collapsible_group(group, "attachment")
+        self.configure_splitter_pane(group, min_height=170)
 
         input_row = QHBoxLayout()
         self.basic_attachment_input = FileDropLineEdit(allow_multiple=True, parent=self)
@@ -1536,11 +1733,12 @@ class ExcelSenderGUI(QWidget):
         self.basic_attachment_table.setSelectionBehavior(QAbstractItemView.SelectRows)
         self.basic_attachment_table.setEditTriggers(QAbstractItemView.NoEditTriggers)
         self.basic_attachment_table.setTextElideMode(Qt.ElideMiddle)
-        header = self.basic_attachment_table.horizontalHeader()
-        header.setSectionResizeMode(0, QHeaderView.Fixed)
-        header.setMinimumSectionSize(60)
-        header.setMaximumSectionSize(80)
-        header.setSectionResizeMode(1, QHeaderView.Stretch)
+        self.configure_resizable_table_columns(
+            self.basic_attachment_table,
+            initial_widths=[110, 520],
+            signature="basic_attachment_table",
+            min_section_size=60,
+        )
         self.basic_attachment_table.verticalHeader().setDefaultSectionSize(36)
         self.basic_attachment_table.verticalHeader().setMinimumSectionSize(32)
         self.basic_attachment_table.setMinimumHeight(120)
@@ -1550,6 +1748,7 @@ class ExcelSenderGUI(QWidget):
     def build_basic_send_group(self) -> QGroupBox:
         group = QGroupBox("5. 发送设置")
         layout = self.init_basic_collapsible_group(group, "send")
+        self.configure_splitter_pane(group, min_height=150, vertical_policy=QSizePolicy.Preferred)
 
         settings_grid = QGridLayout()
         settings_grid.setHorizontalSpacing(10)
@@ -1596,15 +1795,15 @@ class ExcelSenderGUI(QWidget):
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(10)
 
-        splitter = QSplitter(Qt.Horizontal, page)
-        splitter.setHandleWidth(6)
-        splitter.setOpaqueResize(True)
-        splitter.setChildrenCollapsible(False)
-        splitter.addWidget(self.build_local_store_group())
-        splitter.addWidget(self.build_filter_group())
-        splitter.setStretchFactor(0, 3)
-        splitter.setStretchFactor(1, 2)
-        layout.addWidget(splitter, stretch=1)
+        self.local_store_page_splitter = self.build_splitter(
+            Qt.Horizontal,
+            [self.build_local_store_group(), self.build_filter_group()],
+            parent=page,
+            stretch_factors=[3, 2],
+            splitter_key="local_store.main",
+            default_sizes=[640, 420],
+        )
+        layout.addWidget(self.local_store_page_splitter, stretch=1)
         return page
 
     def build_send_prepare_page(self) -> QWidget:
@@ -1613,24 +1812,32 @@ class ExcelSenderGUI(QWidget):
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(10)
 
-        splitter = QSplitter(Qt.Horizontal, page)
-        splitter.setHandleWidth(6)
-        splitter.setOpaqueResize(True)
-        splitter.setChildrenCollapsible(False)
-
         left_panel = QWidget(page)
         left_layout = QVBoxLayout(left_panel)
         left_layout.setContentsMargins(0, 0, 0, 0)
         left_layout.setSpacing(10)
-        left_layout.addWidget(self.build_control_group())
-        left_layout.addWidget(self.build_preview_group(), stretch=1)
+        control_group = self.configure_splitter_pane(self.build_control_group(), min_height=180, vertical_policy=QSizePolicy.Preferred)
+        preview_group = self.configure_splitter_pane(self.build_preview_group(), min_height=240)
+        self.send_prepare_left_splitter = self.build_splitter(
+            Qt.Vertical,
+            [control_group, preview_group],
+            parent=left_panel,
+            stretch_factors=[2, 5],
+            splitter_key="workbench.send.left",
+            default_sizes=[220, 460],
+        )
+        left_layout.addWidget(self.send_prepare_left_splitter, stretch=1)
 
         settings_group = self.build_execution_settings_group()
-        splitter.addWidget(left_panel)
-        splitter.addWidget(self.build_scroll_area(settings_group))
-        splitter.setStretchFactor(0, 5)
-        splitter.setStretchFactor(1, 3)
-        layout.addWidget(splitter, stretch=1)
+        self.send_prepare_splitter = self.build_splitter(
+            Qt.Horizontal,
+            [left_panel, self.build_scroll_area(settings_group)],
+            parent=page,
+            stretch_factors=[5, 3],
+            splitter_key="workbench.send.main",
+            default_sizes=[720, 420],
+        )
+        layout.addWidget(self.send_prepare_splitter, stretch=1)
         return page
 
     def build_task_center_page(self) -> QWidget:
@@ -1640,12 +1847,15 @@ class ExcelSenderGUI(QWidget):
         layout.setSpacing(10)
         layout.addWidget(self.build_task_center_toolbar())
 
-        bottom_splitter = QSplitter(Qt.Horizontal, page)
-        bottom_splitter.addWidget(self.build_schedule_group())
-        bottom_splitter.addWidget(self.build_log_group())
-        bottom_splitter.setStretchFactor(0, 4)
-        bottom_splitter.setStretchFactor(1, 3)
-        layout.addWidget(bottom_splitter, stretch=1)
+        self.task_center_splitter = self.build_splitter(
+            Qt.Horizontal,
+            [self.build_schedule_group(), self.build_log_group()],
+            parent=page,
+            stretch_factors=[4, 3],
+            splitter_key="task_center.main",
+            default_sizes=[620, 460],
+        )
+        layout.addWidget(self.task_center_splitter, stretch=1)
         return page
 
     def build_task_center_toolbar(self) -> QGroupBox:
@@ -1831,6 +2041,11 @@ class ExcelSenderGUI(QWidget):
         layout = QVBoxLayout(group)
         layout.setSpacing(10)
 
+        action_panel = QWidget(group)
+        action_panel_layout = QVBoxLayout(action_panel)
+        action_panel_layout.setContentsMargins(0, 0, 0, 0)
+        action_panel_layout.setSpacing(8)
+
         task_action_layout = QGridLayout()
         task_action_layout.setHorizontalSpacing(10)
         task_action_layout.setVerticalSpacing(8)
@@ -1865,7 +2080,7 @@ class ExcelSenderGUI(QWidget):
         task_action_layout.addWidget(self.cancel_schedule_button, 2, 1)
         task_action_layout.setColumnStretch(0, 1)
         task_action_layout.setColumnStretch(1, 1)
-        layout.addLayout(task_action_layout)
+        action_panel_layout.addLayout(task_action_layout)
 
         self.schedule_table = QTableWidget(0, 7, self)
         self.schedule_table.setHorizontalHeaderLabels(["队列ID", "计划时间", "执行状态", "自动调度", "人数", "来源", "内容摘要"])
@@ -1875,26 +2090,28 @@ class ExcelSenderGUI(QWidget):
         self.schedule_table.setEditTriggers(QAbstractItemView.NoEditTriggers)
         self.schedule_table.setTextElideMode(Qt.ElideMiddle)
         self.schedule_table.itemSelectionChanged.connect(self.update_action_button_state)
-        header = self.schedule_table.horizontalHeader()
-        header.setSectionResizeMode(0, QHeaderView.Interactive)
-        header.setMinimumSectionSize(60)
-        header.setSectionResizeMode(1, QHeaderView.Interactive)
-        header.setMinimumSectionSize(120)
-        header.setSectionResizeMode(2, QHeaderView.Fixed)
-        header.setMinimumSectionSize(72)
-        header.setMaximumSectionSize(90)
-        header.setSectionResizeMode(3, QHeaderView.Fixed)
-        header.setMinimumSectionSize(72)
-        header.setMaximumSectionSize(90)
-        header.setSectionResizeMode(4, QHeaderView.Fixed)
-        header.setMinimumSectionSize(48)
-        header.setMaximumSectionSize(60)
-        header.setSectionResizeMode(5, QHeaderView.Interactive)
-        header.setMinimumSectionSize(60)
-        header.setSectionResizeMode(6, QHeaderView.Stretch)
+        self.configure_resizable_table_columns(
+            self.schedule_table,
+            initial_widths=[90, 180, 110, 110, 80, 150, 420],
+            signature="schedule_table",
+            min_section_size=60,
+        )
         self.schedule_table.verticalHeader().setDefaultSectionSize(36)
         self.schedule_table.verticalHeader().setMinimumSectionSize(32)
-        layout.addWidget(self.schedule_table, stretch=1)
+        self.schedule_table.setMinimumHeight(220)
+
+        schedule_splitter = self.build_splitter(
+            Qt.Vertical,
+            [
+                self.configure_splitter_pane(action_panel, min_height=128, vertical_policy=QSizePolicy.Preferred),
+                self.configure_splitter_pane(self.schedule_table, min_height=220),
+            ],
+            parent=group,
+            stretch_factors=[1, 4],
+            splitter_key="task_center.schedule",
+            default_sizes=[150, 420],
+        )
+        layout.addWidget(schedule_splitter, stretch=1)
 
         return group
 
@@ -1902,6 +2119,11 @@ class ExcelSenderGUI(QWidget):
         group = QGroupBox("本地库数据")
         layout = QVBoxLayout(group)
         layout.setSpacing(10)
+
+        header_panel = QWidget(group)
+        header_layout = QVBoxLayout(header_panel)
+        header_layout.setContentsMargins(0, 0, 0, 0)
+        header_layout.setSpacing(8)
 
         action_layout = QHBoxLayout()
         self.refresh_local_store_button = QPushButton("刷新本地库")
@@ -1911,15 +2133,15 @@ class ExcelSenderGUI(QWidget):
         action_layout.addWidget(self.refresh_local_store_button)
         action_layout.addWidget(self.use_local_store_button)
         action_layout.addStretch(1)
-        layout.addLayout(action_layout)
+        header_layout.addLayout(action_layout)
 
         self.local_store_summary_label = QLabel("本地库暂无数据。")
         self.style_helper_label(self.local_store_summary_label)
-        layout.addWidget(self.local_store_summary_label)
+        header_layout.addWidget(self.local_store_summary_label)
 
         self.local_filter_scope_label = QLabel("当前筛选对象：好友库当前批次。")
         self.style_helper_label(self.local_filter_scope_label, color="#555")
-        layout.addWidget(self.local_filter_scope_label)
+        header_layout.addWidget(self.local_filter_scope_label)
 
         self.local_store_tabs = QTabWidget(self)
         self.local_store_views: dict[str, dict[str, object]] = {}
@@ -1928,7 +2150,18 @@ class ExcelSenderGUI(QWidget):
             self.local_store_tabs.addTab(tab, DATASET_LABELS[dataset_type])
             self.local_store_views[dataset_type] = view_refs
         self.local_store_tabs.currentChanged.connect(self.on_local_store_tab_changed)
-        layout.addWidget(self.local_store_tabs, stretch=1)
+        local_store_splitter = self.build_splitter(
+            Qt.Vertical,
+            [
+                self.configure_splitter_pane(header_panel, min_height=110, vertical_policy=QSizePolicy.Preferred),
+                self.configure_splitter_pane(self.local_store_tabs, min_height=260),
+            ],
+            parent=group,
+            stretch_factors=[1, 4],
+            splitter_key="local_store.dataset_shell",
+            default_sizes=[120, 460],
+        )
+        layout.addWidget(local_store_splitter, stretch=1)
 
         return group
 
@@ -1938,24 +2171,41 @@ class ExcelSenderGUI(QWidget):
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(10)
 
+        info_panel = QWidget(panel)
+        info_layout = QVBoxLayout(info_panel)
+        info_layout.setContentsMargins(0, 0, 0, 0)
+        info_layout.setSpacing(8)
+
         summary_label = QLabel(f"{DATASET_LABELS[dataset_type]}库暂无数据。")
         self.style_helper_label(summary_label)
-        layout.addWidget(summary_label)
+        info_layout.addWidget(summary_label)
 
         columns_view = QPlainTextEdit(self)
         columns_view.setReadOnly(True)
         columns_view.setFixedHeight(60)
-        layout.addWidget(columns_view)
+        info_layout.addWidget(columns_view)
 
         table = QTableWidget(0, 0, self)
         table.verticalHeader().setVisible(False)
         table.setEditTriggers(QAbstractItemView.NoEditTriggers)
         table.setSelectionBehavior(QAbstractItemView.SelectRows)
         table.setTextElideMode(Qt.ElideMiddle)
-        table.horizontalHeader().setStretchLastSection(True)
         table.verticalHeader().setDefaultSectionSize(36)
         table.verticalHeader().setMinimumSectionSize(32)
-        layout.addWidget(table, stretch=1)
+        table.setMinimumHeight(220)
+
+        dataset_splitter = self.build_splitter(
+            Qt.Vertical,
+            [
+                self.configure_splitter_pane(info_panel, min_height=100, vertical_policy=QSizePolicy.Preferred),
+                self.configure_splitter_pane(table, min_height=220),
+            ],
+            parent=panel,
+            stretch_factors=[1, 4],
+            splitter_key=f"local_store.{dataset_type}",
+            default_sizes=[110, 360],
+        )
+        layout.addWidget(dataset_splitter, stretch=1)
 
         return panel, {
             "summary_label": summary_label,
@@ -1967,6 +2217,11 @@ class ExcelSenderGUI(QWidget):
         group = QGroupBox("Excel 数据")
         layout = QVBoxLayout(group)
         layout.setSpacing(12)
+
+        source_panel = QWidget(group)
+        source_layout = QVBoxLayout(source_panel)
+        source_layout.setContentsMargins(0, 0, 0, 0)
+        source_layout.setSpacing(10)
 
         path_layout = QHBoxLayout()
         self.excel_path_input = FileDropLineEdit(
@@ -1994,7 +2249,7 @@ class ExcelSenderGUI(QWidget):
         path_layout.addWidget(import_button)
         self.import_local_button = import_button
 
-        layout.addLayout(path_layout)
+        source_layout.addLayout(path_layout)
 
         summary_card = self.build_panel_card(group)
         summary_layout = QVBoxLayout(summary_card)
@@ -2008,18 +2263,7 @@ class ExcelSenderGUI(QWidget):
         self.local_db_status_label = QLabel("本地库尚未导入数据。")
         self.style_helper_label(self.local_db_status_label, color="#555")
         summary_layout.addWidget(self.local_db_status_label)
-        layout.addWidget(summary_card)
-
-        layout.addWidget(self.build_separator())
-
-        send_target_title = QLabel("发送识别列")
-        self.style_section_title_label(send_target_title)
-        layout.addWidget(send_target_title)
-
-        send_target_hint_label = QLabel("可填写 `微信号`、`姓名`、`备注` 等列名，发送时会按这里的列去微信搜索。")
-        send_target_hint_label.setWordWrap(True)
-        self.style_helper_label(send_target_hint_label, color="#555")
-        layout.addWidget(send_target_hint_label)
+        source_layout.addWidget(summary_card)
 
         send_target_card = self.build_panel_card(group)
         send_target_layout = QVBoxLayout(send_target_card)
@@ -2034,27 +2278,56 @@ class ExcelSenderGUI(QWidget):
         self.send_target_status_label = QLabel("当前发送时会使用“微信号”列作为微信搜索关键词。")
         self.style_helper_label(self.send_target_status_label, color="#555")
         send_target_layout.addWidget(self.send_target_status_label)
-        layout.addWidget(send_target_card)
-
-        columns_title = QLabel("检测到的列名")
-        self.style_section_title_label(columns_title)
-        layout.addWidget(columns_title)
-
-        columns_hint_label = QLabel("这里显示 Excel 表头，便于复制识别列名或核对模板占位符。")
-        columns_hint_label.setWordWrap(True)
-        self.style_helper_label(columns_hint_label, color="#555")
-        layout.addWidget(columns_hint_label)
 
         self.columns_empty_label = QLabel("读取 Excel 后，这里会显示当前文件的列名参考。")
         self.style_empty_state_label(self.columns_empty_label)
-        layout.addWidget(self.columns_empty_label)
 
         self.columns_view = QPlainTextEdit(self)
         self.columns_view.setReadOnly(True)
         self.columns_view.setPlaceholderText("读取 Excel 后，这里会显示列名参考。")
         self.columns_view.setFixedHeight(64)
-        layout.addWidget(self.columns_view)
         self.update_columns_reference_presentation()
+
+        columns_panel_content = QWidget(group)
+        columns_panel_layout = QVBoxLayout(columns_panel_content)
+        columns_panel_layout.setContentsMargins(0, 0, 0, 0)
+        columns_panel_layout.setSpacing(8)
+        columns_panel_layout.addWidget(self.columns_empty_label)
+        columns_panel_layout.addWidget(self.columns_view)
+
+        source_section = self.build_section_panel(
+            parent=group,
+            title="文件与导入摘要",
+            hint="先选择 Excel 或 CSV，再决定是否同步导入本地库。",
+            content=source_panel,
+        )
+        target_section = self.build_section_panel(
+            parent=group,
+            title="发送识别列",
+            hint="可填写 `微信号`、`姓名`、`备注` 等列名，发送时会按这里的列去微信搜索。",
+            content=send_target_card,
+        )
+        columns_section = self.build_section_panel(
+            parent=group,
+            title="检测到的列名",
+            hint="这里显示 Excel 表头，便于复制识别列名或核对模板占位符。",
+            content=columns_panel_content,
+        )
+        columns_section.setMinimumHeight(180)
+
+        excel_splitter = self.build_splitter(
+            Qt.Vertical,
+            [
+                self.configure_splitter_pane(source_section, min_height=160, vertical_policy=QSizePolicy.Preferred),
+                self.configure_splitter_pane(target_section, min_height=140, vertical_policy=QSizePolicy.Preferred),
+                self.configure_splitter_pane(columns_section, min_height=180),
+            ],
+            parent=group,
+            stretch_factors=[2, 2, 3],
+            splitter_key="data_template.excel",
+            default_sizes=[220, 190, 250],
+        )
+        layout.addWidget(excel_splitter, stretch=1)
 
         return group
 
@@ -2063,35 +2336,20 @@ class ExcelSenderGUI(QWidget):
         layout = QVBoxLayout(group)
         layout.setSpacing(12)
 
-        template_title = QLabel("模板内容")
-        self.style_section_title_label(template_title)
-        layout.addWidget(template_title)
-
-        tip_label = QLabel("支持占位符语法 `{{列名}}`，例如：`您好 {{姓名}}`。")
-        tip_label.setWordWrap(True)
-        self.style_helper_label(tip_label)
-        layout.addWidget(tip_label)
-
         self.template_input = QPlainTextEdit(self)
         self.template_input.setPlaceholderText("请输入要批量发送的模板消息。")
         self.template_input.textChanged.connect(self.on_template_changed)
         self.template_input.setMinimumHeight(220)
-        layout.addWidget(self.template_input)
 
         self.placeholder_status_label = QLabel("当前模板未使用占位符。")
         self.style_helper_label(self.placeholder_status_label)
-        layout.addWidget(self.placeholder_status_label)
 
-        layout.addWidget(self.build_separator())
-
-        attachment_title = QLabel("通用附件（任意本地文件）")
-        self.style_section_title_label(attachment_title)
-        layout.addWidget(attachment_title)
-
-        attachment_hint_label = QLabel("为整轮发送统一附带附件；留空则本轮不会附带通用附件。")
-        attachment_hint_label.setWordWrap(True)
-        self.style_helper_label(attachment_hint_label, color="#555")
-        layout.addWidget(attachment_hint_label)
+        template_panel_content = QWidget(group)
+        template_panel_layout = QVBoxLayout(template_panel_content)
+        template_panel_layout.setContentsMargins(0, 0, 0, 0)
+        template_panel_layout.setSpacing(8)
+        template_panel_layout.addWidget(self.template_input, stretch=1)
+        template_panel_layout.addWidget(self.placeholder_status_label)
 
         attachment_path_layout = QHBoxLayout()
         self.common_attachment_input = FileDropLineEdit(
@@ -2108,7 +2366,6 @@ class ExcelSenderGUI(QWidget):
         add_attachment_button = QPushButton("添加到通用附件")
         add_attachment_button.clicked.connect(self.import_common_attachments_from_input)
         attachment_path_layout.addWidget(add_attachment_button)
-        layout.addLayout(attachment_path_layout)
 
         attachment_action_layout = QHBoxLayout()
         self.remove_common_attachment_button = QPushButton("删除选中附件")
@@ -2118,15 +2375,12 @@ class ExcelSenderGUI(QWidget):
         attachment_action_layout.addWidget(self.remove_common_attachment_button)
         attachment_action_layout.addWidget(self.clear_common_attachment_button)
         attachment_action_layout.addStretch(1)
-        layout.addLayout(attachment_action_layout)
 
         self.common_attachment_status_label = QLabel("当前未添加通用附件。")
         self.style_helper_label(self.common_attachment_status_label, color="#555")
-        layout.addWidget(self.common_attachment_status_label)
 
         self.common_attachment_empty_label = QLabel("当前还没有通用附件。可点击“选择附件”或输入路径后添加。")
         self.style_empty_state_label(self.common_attachment_empty_label)
-        layout.addWidget(self.common_attachment_empty_label)
 
         self.common_attachment_table = QTableWidget(0, 2, self)
         self.common_attachment_table.setHorizontalHeaderLabels(["类型", "路径"])
@@ -2141,9 +2395,44 @@ class ExcelSenderGUI(QWidget):
         header.setSectionResizeMode(1, QHeaderView.Stretch)
         self.common_attachment_table.verticalHeader().setDefaultSectionSize(36)
         self.common_attachment_table.verticalHeader().setMinimumSectionSize(32)
-        self.common_attachment_table.setMinimumHeight(120)
-        layout.addWidget(self.common_attachment_table)
+        self.common_attachment_table.setMinimumHeight(150)
         self.update_common_attachment_presentation()
+
+        attachment_panel_content = QWidget(group)
+        attachment_panel_layout = QVBoxLayout(attachment_panel_content)
+        attachment_panel_layout.setContentsMargins(0, 0, 0, 0)
+        attachment_panel_layout.setSpacing(8)
+        attachment_panel_layout.addLayout(attachment_path_layout)
+        attachment_panel_layout.addLayout(attachment_action_layout)
+        attachment_panel_layout.addWidget(self.common_attachment_status_label)
+        attachment_panel_layout.addWidget(self.common_attachment_empty_label)
+        attachment_panel_layout.addWidget(self.common_attachment_table, stretch=1)
+
+        template_section = self.build_section_panel(
+            parent=group,
+            title="模板内容",
+            hint="支持占位符语法 `{{列名}}`，例如：`您好 {{姓名}}`。",
+            content=template_panel_content,
+        )
+        attachment_section = self.build_section_panel(
+            parent=group,
+            title="通用附件（任意本地文件）",
+            hint="为整轮发送统一附带附件；留空则本轮不会附带通用附件。",
+            content=attachment_panel_content,
+        )
+
+        template_splitter = self.build_splitter(
+            Qt.Vertical,
+            [
+                self.configure_splitter_pane(template_section, min_height=260),
+                self.configure_splitter_pane(attachment_section, min_height=220),
+            ],
+            parent=group,
+            stretch_factors=[3, 2],
+            splitter_key="data_template.template",
+            default_sizes=[360, 260],
+        )
+        layout.addWidget(template_splitter, stretch=1)
 
         return group
 
@@ -2401,6 +2690,7 @@ class ExcelSenderGUI(QWidget):
             self.load_excel_data(show_success=False)
         else:
             self.render_preview()
+        QTimer.singleShot(0, self.restore_registered_splitter_states)
 
     def set_language(self, language: str) -> None:
         self.config["settings"]["language"] = language
@@ -5844,6 +6134,8 @@ class ExcelSenderGUI(QWidget):
             QMessageBox.warning(self, "请先停止发送", "当前仍在发送中，请先停止任务后再关闭窗口。")
             event.ignore()
             return
+        self.splitter_state_save_timer.stop()
+        self.save_registered_splitter_states()
         self.scheduler_timer.stop()
         super().closeEvent(event)
 
