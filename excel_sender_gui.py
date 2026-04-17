@@ -677,7 +677,7 @@ class ExcelSenderGUI(QWidget):
         default_sizes: list[int] | None = None,
     ) -> QSplitter:
         splitter = QSplitter(orientation, parent)
-        splitter.setHandleWidth(6)
+        splitter.setHandleWidth(4)
         splitter.setOpaqueResize(True)
         splitter.setChildrenCollapsible(False)
         for index, widget in enumerate(widgets):
@@ -795,9 +795,9 @@ class ExcelSenderGUI(QWidget):
             return
         if role == "section-panel":
             widget.setStyleSheet(
-                f"background:{tokens['panel_alt_bg']};"
-                "border:1px solid transparent;"
-                "border-radius:14px;"
+                f"background:{tokens['panel_bg']};"
+                f"border:1px solid {tokens['border']};"
+                "border-radius:12px;"
             )
             return
         if role == "empty-state":
@@ -1120,10 +1120,10 @@ class ExcelSenderGUI(QWidget):
                 border: none;
             }}
             QSplitter::handle {{
-                background: {tokens['splitter_handle']};
+                background: {tokens['window_bg']};
             }}
             QSplitter::handle:hover {{
-                background: {tokens['splitter_handle_hover']};
+                background: {tokens['separator']};
             }}
             QSplitter {{}}
             QScrollArea {{
