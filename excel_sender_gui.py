@@ -114,12 +114,12 @@ PAGE_KEY_LOCAL_STORE = "local_store"
 PAGE_KEY_TASK_CENTER = "task_center"
 WORKBENCH_VIEW_BASIC = "basic"
 WORKBENCH_VIEW_SEND = "send_prepare"
-CURRENT_SPLITTER_LAYOUT_VERSION = 3
+CURRENT_SPLITTER_LAYOUT_VERSION = 4
 SPLITTER_STARTUP_DEFAULT_SIZES: dict[str, list[int]] = {
     "workbench.basic.left": [250, 761],
     "workbench.basic.right": [432, 305, 270],
     "workbench.basic.main": [701, 701],
-    "data_template.excel": [341, 299, 384],
+    "data_template.excel": [341, 112, 571],
     "data_template.template": [242, 242, 540],
     "data_template.main": [777, 625],
     "local_store.friend": [124, 764],
@@ -135,7 +135,7 @@ LEGACY_AUTO_SPLITTER_SIZES: dict[str, tuple[tuple[int, ...], ...]] = {
     "workbench.basic.left": ((220, 760), (220, 791)),
     "workbench.basic.right": ((300, 180, 170), (465, 279, 263)),
     "workbench.basic.main": ((520, 650), (631, 789)),
-    "data_template.excel": ((220, 190, 250), (346, 299, 393), (7, 8, 7)),
+    "data_template.excel": ((220, 190, 250), (346, 299, 393), (341, 299, 384), (7, 8, 7)),
     "data_template.template": ((340, 110, 300), (471, 152, 415), (7, 8, 7)),
     "data_template.main": ((520, 640), (637, 783), (48, 48)),
     "local_store.friend": ((84, 386), (153, 702), (13, 13)),
@@ -1832,6 +1832,7 @@ class ExcelSenderGUI(QWidget):
         self.basic_column_status_label = QLabel("导入 Excel 后可从列名中选择匹配字段；发送仍要求存在“微信号”列。")
         self.style_helper_label(self.basic_column_status_label, color="#555")
         layout.addWidget(self.basic_column_status_label)
+        layout.addStretch(1)
         return group
 
     def build_basic_receiver_group(self) -> QGroupBox:
@@ -2035,6 +2036,7 @@ class ExcelSenderGUI(QWidget):
         action_row.addWidget(self.basic_stop_button)
         action_row.addStretch(1)
         layout.addLayout(action_row)
+        layout.addStretch(1)
         return group
 
     def build_local_store_page(self) -> QWidget:
@@ -2511,21 +2513,37 @@ class ExcelSenderGUI(QWidget):
         self.local_db_status_label = QLabel("本地库尚未导入数据。")
         self.style_helper_label(self.local_db_status_label, color="#555")
         source_layout.addWidget(self.local_db_status_label)
+        source_layout.addStretch(1)
+        self.data_template_source_panel = source_panel
 
         target_panel = QWidget(group)
         target_layout = QVBoxLayout(target_panel)
         target_layout.setContentsMargins(0, 0, 0, 0)
-        target_layout.setSpacing(8)
+        target_layout.setSpacing(0)
+
+        target_row = QWidget(target_panel)
+        target_row_layout = QHBoxLayout(target_row)
+        target_row_layout.setContentsMargins(0, 0, 0, 0)
+        target_row_layout.setSpacing(12)
 
         self.send_target_column_combo = QComboBox(self)
         self.send_target_column_combo.setEnabled(False)
         self.send_target_column_combo.setMinimumWidth(144)
         self.send_target_column_combo.currentIndexChanged.connect(self.on_send_target_column_changed)
-        target_layout.addWidget(self.send_target_column_combo)
+        self.send_target_column_combo.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
+        target_row_layout.addWidget(self.send_target_column_combo)
 
         self.send_target_status_label = QLabel("默认按“微信号”搜索。")
         self.style_helper_label(self.send_target_status_label, color="#555")
-        target_layout.addWidget(self.send_target_status_label)
+        self.send_target_status_label.setWordWrap(False)
+        self.send_target_status_label.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
+        self.send_target_status_label.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
+        target_row_layout.addWidget(self.send_target_status_label, stretch=1)
+
+        target_layout.addWidget(target_row)
+        target_layout.addStretch(1)
+        self.data_template_target_row = target_row
+        self.data_template_target_panel = target_panel
 
         self.columns_empty_label = QLabel("暂无列名。")
         self.style_empty_state_label(self.columns_empty_label, role="section-empty")
@@ -2568,7 +2586,7 @@ class ExcelSenderGUI(QWidget):
             Qt.Vertical,
             [
                 self.configure_splitter_pane(source_section, min_height=160, vertical_policy=QSizePolicy.Preferred),
-                self.configure_splitter_pane(target_section, min_height=140, vertical_policy=QSizePolicy.Preferred),
+                self.configure_splitter_pane(target_section, min_height=96, vertical_policy=QSizePolicy.Preferred),
                 self.configure_splitter_pane(columns_section, min_height=180),
             ],
             parent=group,
@@ -2607,6 +2625,8 @@ class ExcelSenderGUI(QWidget):
         placeholder_panel_layout.setContentsMargins(0, 0, 0, 0)
         placeholder_panel_layout.setSpacing(0)
         placeholder_panel_layout.addWidget(self.placeholder_status_label)
+        placeholder_panel_layout.addStretch(1)
+        self.data_template_placeholder_panel = placeholder_panel_content
 
         attachment_path_layout = QHBoxLayout()
         self.common_attachment_input = FileDropLineEdit(

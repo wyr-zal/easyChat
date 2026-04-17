@@ -10,7 +10,7 @@ from unittest import mock
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from PyQt5.QtCore import QItemSelectionModel, Qt
+from PyQt5.QtCore import QPoint, QItemSelectionModel, Qt
 from PyQt5.QtWidgets import QApplication
 from PyQt5.QtWidgets import QFrame
 from PyQt5.QtWidgets import QHeaderView
@@ -36,7 +36,7 @@ EXPECTED_STARTUP_SPLITTER_SIZES = {
     "workbench.basic.left": [250, 761],
     "workbench.basic.right": [432, 305, 270],
     "workbench.basic.main": [710, 710],
-    "data_template.excel": [346, 303, 389],
+    "data_template.excel": [346, 113, 579],
     "data_template.template": [245, 246, 547],
     "data_template.main": [787, 633],
     "local_store.friend": [126, 775],
@@ -245,6 +245,46 @@ class ExcelSenderGuiRuntimeTests(unittest.TestCase):
             finally:
                 window.close()
 
+    def test_data_template_compact_sections_keep_content_pinned_to_top(self) -> None:
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp_dir:
+            tmp = Path(tmp_dir)
+            excel_path = tmp / "contacts.csv"
+            excel_path.write_text("微信号,姓名,城市\nwx_1,张三,上海\nwx_2,李四,北京\n", encoding="utf-8")
+
+            window = self.create_window(tmp)
+            try:
+                window.main_tabs.setCurrentWidget(window.data_template_page)
+                window.show()
+                window.resize(1600, 980)
+                self.app.processEvents()
+
+                with mock.patch("excel_sender_gui.QMessageBox.information"):
+                    window.excel_path_input.setText(str(excel_path))
+                    self.assertTrue(window.load_excel_data())
+
+                window._registered_splitters["data_template.excel"].setSizes([420, 280, 260])
+                window._registered_splitters["data_template.template"].setSizes([260, 220, 280])
+                self.app.processEvents()
+
+                for panel in (
+                    window.data_template_source_panel,
+                    window.data_template_target_panel,
+                    window.data_template_placeholder_panel,
+                ):
+                    layout = panel.layout()
+                    self.assertIsNotNone(layout)
+                    self.assertIsNotNone(layout.itemAt(layout.count() - 1).spacerItem())
+
+                self.assertLess(window.local_db_status_label.geometry().bottom(), int(window.data_template_source_panel.height() * 0.65))
+                self.assertLess(window.data_template_target_row.geometry().bottom(), int(window.data_template_target_panel.height() * 0.5))
+                self.assertLessEqual(
+                    abs(window.send_target_column_combo.geometry().center().y() - window.send_target_status_label.geometry().center().y()),
+                    10,
+                )
+                self.assertLess(window.placeholder_status_label.geometry().bottom(), int(window.data_template_placeholder_panel.height() * 0.65))
+            finally:
+                window.close()
+
     def test_workbench_uses_nested_splitters_for_horizontal_and_vertical_resize(self) -> None:
         with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp_dir:
             tmp = Path(tmp_dir)
@@ -278,6 +318,38 @@ class ExcelSenderGuiRuntimeTests(unittest.TestCase):
             finally:
                 window.close()
 
+    def test_basic_compact_sections_keep_content_pinned_to_top_when_stretched(self) -> None:
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp_dir:
+            tmp = Path(tmp_dir)
+            window = self.create_window(tmp)
+            try:
+                window.show()
+                window.resize(1500, 980)
+                self.app.processEvents()
+
+                window.basic_left_splitter.setSizes([520, 180])
+                window.basic_right_splitter.setSizes([260, 180, 280])
+                self.app.processEvents()
+
+                import_content = window.basic_section_content_widgets["import"]
+                send_content = window.basic_section_content_widgets["send"]
+                self.assertIsNotNone(import_content.layout().itemAt(import_content.layout().count() - 1).spacerItem())
+                self.assertIsNotNone(send_content.layout().itemAt(send_content.layout().count() - 1).spacerItem())
+
+                import_status_bottom = (
+                    window.basic_column_status_label.mapTo(import_content, QPoint(0, 0)).y()
+                    + window.basic_column_status_label.height()
+                )
+                send_button_bottom = (
+                    window.basic_start_button.mapTo(send_content, QPoint(0, 0)).y()
+                    + window.basic_start_button.height()
+                )
+
+                self.assertLess(import_status_bottom, int(import_content.height() * 0.65))
+                self.assertLess(send_button_bottom, int(send_content.height() * 0.8))
+            finally:
+                window.close()
+
     def test_startup_splitter_defaults_match_screenshot_layouts(self) -> None:
         with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp_dir:
             tmp = Path(tmp_dir)
@@ -289,7 +361,7 @@ class ExcelSenderGuiRuntimeTests(unittest.TestCase):
                     "workbench.basic.left": [250, 761],
                     "workbench.basic.right": [432, 305, 270],
                     "workbench.basic.main": [701, 701],
-                    "data_template.excel": [341, 299, 384],
+                    "data_template.excel": [341, 112, 571],
                     "data_template.template": [242, 242, 540],
                     "data_template.main": [777, 625],
                     "local_store.friend": [124, 764],
@@ -334,6 +406,38 @@ class ExcelSenderGuiRuntimeTests(unittest.TestCase):
                     for splitter_key in splitter_keys:
                         with self.subTest(splitter_key=splitter_key):
                             self.assertEqual(window._registered_splitters[splitter_key].sizes(), EXPECTED_STARTUP_SPLITTER_SIZES[splitter_key])
+            finally:
+                window.close()
+
+    def test_previous_data_template_splitter_defaults_upgrade_to_compact_target_row(self) -> None:
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp_dir:
+            tmp = Path(tmp_dir)
+            config_path = tmp / "excel-sender-test-config.json"
+            config_path.write_text(
+                json.dumps(
+                    {
+                        "ui": {
+                            "splitter_layout_version": CURRENT_SPLITTER_LAYOUT_VERSION - 1,
+                            "splitter_sizes": {
+                                "data_template.excel": [341, 299, 384],
+                            },
+                        }
+                    },
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+
+            window = self.create_window(tmp)
+            try:
+                window.show()
+                self.app.processEvents()
+                upgraded_config = json.loads(config_path.read_text(encoding="utf-8"))
+                self.assertEqual(upgraded_config["ui"]["splitter_layout_version"], CURRENT_SPLITTER_LAYOUT_VERSION)
+                self.assertEqual(
+                    upgraded_config["ui"]["splitter_sizes"]["data_template.excel"],
+                    SPLITTER_STARTUP_DEFAULT_SIZES["data_template.excel"],
+                )
             finally:
                 window.close()
 
@@ -583,11 +687,26 @@ class ExcelSenderGuiRuntimeTests(unittest.TestCase):
                 with mock.patch("excel_sender_gui.QMessageBox.information"):
                     self.assertTrue(window.load_excel_data())
                 self.app.processEvents()
+                self.assertEqual(window.send_target_column_combo.count(), 3)
+                self.assertEqual(window.send_target_column_combo.currentData(), "微信号")
+                self.assertTrue(window.send_target_column_combo.isEnabled())
+                self.assertFalse(window.send_target_status_label.wordWrap())
+                self.assertEqual(window.send_target_status_label.alignment(), Qt.AlignRight | Qt.AlignVCenter)
                 self.assertFalse(window.columns_empty_label.isVisible())
                 self.assertTrue(window.columns_view.isVisible())
                 self.assertIn("微信号", window.columns_view.toPlainText())
                 self.assertEqual(window.columns_view.sizePolicy().verticalPolicy(), QSizePolicy.Expanding)
                 self.assertGreater(window.columns_view.maximumHeight(), 1000)
+
+                window.send_target_column_combo.setCurrentIndex(window.send_target_column_combo.findData("姓名"))
+                self.app.processEvents()
+                self.assertEqual(window.get_send_target_column(), "姓名")
+                self.assertIn("识别列：姓名｜可发送 2 行", window.send_target_status_label.text())
+
+                self.assertLessEqual(
+                    abs(window.send_target_column_combo.geometry().center().y() - window.send_target_status_label.geometry().center().y()),
+                    10,
+                )
 
                 window.common_attachments = [{"file_path": str(pdf), "file_type": "pdf"}]
                 window.refresh_common_attachment_table()
