@@ -27,6 +27,7 @@ from PyQt5.QtWidgets import (
     QLabel,
     QLineEdit,
     QMessageBox,
+    QMenu,
     QPlainTextEdit,
     QPushButton,
     QRadioButton,
@@ -113,7 +114,39 @@ PAGE_KEY_LOCAL_STORE = "local_store"
 PAGE_KEY_TASK_CENTER = "task_center"
 WORKBENCH_VIEW_BASIC = "basic"
 WORKBENCH_VIEW_SEND = "send_prepare"
-CURRENT_SPLITTER_LAYOUT_VERSION = 2
+CURRENT_SPLITTER_LAYOUT_VERSION = 3
+SPLITTER_STARTUP_DEFAULT_SIZES: dict[str, list[int]] = {
+    "workbench.basic.left": [250, 761],
+    "workbench.basic.right": [432, 305, 270],
+    "workbench.basic.main": [701, 701],
+    "data_template.excel": [341, 299, 384],
+    "data_template.template": [242, 242, 540],
+    "data_template.main": [777, 625],
+    "local_store.friend": [124, 764],
+    "local_store.group": [124, 764],
+    "local_store.dataset_shell": [82, 944],
+    "local_store.main": [898, 504],
+    "workbench.send.left": [286, 725],
+    "workbench.send.main": [833, 569],
+    "task_center.schedule": [108, 769],
+    "task_center.main": [1102, 300],
+}
+LEGACY_AUTO_SPLITTER_SIZES: dict[str, tuple[tuple[int, ...], ...]] = {
+    "workbench.basic.left": ((220, 760), (220, 791)),
+    "workbench.basic.right": ((300, 180, 170), (465, 279, 263)),
+    "workbench.basic.main": ((520, 650), (631, 789)),
+    "data_template.excel": ((220, 190, 250), (346, 299, 393), (7, 8, 7)),
+    "data_template.template": ((340, 110, 300), (471, 152, 415), (7, 8, 7)),
+    "data_template.main": ((520, 640), (637, 783), (48, 48)),
+    "local_store.friend": ((84, 386), (153, 702), (13, 13)),
+    "local_store.group": ((84, 386), (153, 702), (13, 13)),
+    "local_store.dataset_shell": ((72, 508), (129, 911), (13, 13)),
+    "local_store.main": ((640, 420), (857, 563), (48, 48)),
+    "workbench.send.left": ((220, 460), (327, 684), (13, 13)),
+    "workbench.send.main": ((720, 420), (897, 523), (48, 48)),
+    "task_center.schedule": ((118, 452), (187, 718), (13, 13)),
+    "task_center.main": ((620, 460), (815, 605), (48, 48)),
+}
 BASIC_SEND_STATUS_TEXT = {
     "": "待发送",
     "pending": "待发送",
@@ -131,14 +164,14 @@ BASIC_SEND_STATUS_COLORS = {
     "skipped": ("#6b7280", "#ffffff"),
 }
 ATTACHMENT_TYPE_COLORS = {
-    "image": ("#3b82f6", "#ffffff"),
-    "图片": ("#3b82f6", "#ffffff"),
-    "file": ("#6b7280", "#ffffff"),
-    "文件": ("#6b7280", "#ffffff"),
-    "video": ("#8b5cf6", "#ffffff"),
-    "视频": ("#8b5cf6", "#ffffff"),
-    "document": ("#10b981", "#ffffff"),
-    "文档": ("#10b981", "#ffffff"),
+    "image": ("#dbeafe", "#111827"),
+    "图片": ("#dbeafe", "#111827"),
+    "file": ("#e5e7eb", "#111827"),
+    "文件": ("#e5e7eb", "#111827"),
+    "video": ("#ede9fe", "#111827"),
+    "视频": ("#ede9fe", "#111827"),
+    "document": ("#d1fae5", "#111827"),
+    "文档": ("#d1fae5", "#111827"),
 }
 SEMANTIC_COLOR_MAP = {
     "#555": "muted",
@@ -296,6 +329,8 @@ class ExcelSenderGUI(QWidget):
         self.basic_section_content_widgets: dict[str, QWidget] = {}
         self.inline_section_groups: dict[str, QGroupBox] = {}
         self.inline_section_title_labels: dict[str, QLabel] = {}
+        self.local_store_all_columns: dict[str, list[str]] = {}
+        self.local_store_visible_columns: dict[str, list[str]] = {}
         self._registered_splitters: dict[str, QSplitter] = {}
         self._splitter_default_sizes: dict[str, list[int]] = {}
         self._theme_mode = str(self.config.get("settings", {}).get("theme_mode") or THEME_MODE_AUTO)
@@ -644,26 +679,37 @@ class ExcelSenderGUI(QWidget):
     ) -> QWidget:
         panel = QFrame(parent)
         panel.setFrameShape(QFrame.NoFrame)
-        panel.setProperty("themeStyleRole", "section-panel")
+        panel.setProperty("themeStyleRole", "section-shell")
         panel.setProperty("themeTone", "default")
         self.apply_semantic_widget_style(panel)
 
         layout = QVBoxLayout(panel)
-        layout.setContentsMargins(12, 12, 12, 12)
-        layout.setSpacing(spacing)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(6)
 
         title_label = QLabel(title, panel)
         self.style_section_title_label(title_label)
         layout.addWidget(title_label)
 
+        body_card = QFrame(panel)
+        body_card.setFrameShape(QFrame.NoFrame)
+        body_card.setProperty("themeStyleRole", "section-panel")
+        body_card.setProperty("themeTone", "default")
+        self.apply_semantic_widget_style(body_card)
+
+        body_layout = QVBoxLayout(body_card)
+        body_layout.setContentsMargins(12, 12, 12, 12)
+        body_layout.setSpacing(spacing)
+
         if hint:
-            hint_label = QLabel(hint, panel)
+            hint_label = QLabel(hint, body_card)
             hint_label.setWordWrap(True)
             self.style_helper_label(hint_label, color="#555")
-            layout.addWidget(hint_label)
+            body_layout.addWidget(hint_label)
 
         if content is not None:
-            layout.addWidget(content, stretch=1)
+            body_layout.addWidget(content, stretch=1)
+        layout.addWidget(body_card, stretch=1)
         return panel
 
     def build_splitter(
@@ -690,6 +736,27 @@ class ExcelSenderGUI(QWidget):
             splitter.setProperty("defaultSizes", list(default_sizes))
         return splitter
 
+    def normalize_splitter_sizes(self, raw_sizes: Any, expected_count: int) -> list[int] | None:
+        if not isinstance(raw_sizes, list) or len(raw_sizes) != expected_count:
+            return None
+        try:
+            return [max(0, int(size)) for size in raw_sizes]
+        except (TypeError, ValueError):
+            return None
+
+    def should_use_startup_splitter_defaults(
+        self,
+        splitter_key: str,
+        saved_sizes: list[int] | None,
+        layout_version: int,
+    ) -> bool:
+        if layout_version >= CURRENT_SPLITTER_LAYOUT_VERSION:
+            return False
+        if saved_sizes is None:
+            return True
+        legacy_candidates = LEGACY_AUTO_SPLITTER_SIZES.get(splitter_key, ())
+        return any(saved_sizes == list(candidate) for candidate in legacy_candidates)
+
     def register_splitter_state(
         self,
         splitter_key: str,
@@ -707,12 +774,38 @@ class ExcelSenderGUI(QWidget):
             return
         self.splitter_state_save_timer.start()
 
+    def resolve_splitter_sizes_for_save(self, splitter_key: str, splitter: QSplitter) -> list[int] | None:
+        sizes = self.normalize_splitter_sizes(splitter.sizes(), splitter.count())
+        if sizes is None:
+            return None
+        primary_extent = splitter.size().height() if splitter.orientation() == Qt.Vertical else splitter.size().width()
+        layout_not_ready = (
+            not splitter.isVisible()
+            or primary_extent <= max(60, splitter.count() * 24)
+            or sum(sizes) <= max(60, splitter.count() * 24)
+        )
+        if not layout_not_ready:
+            return sizes
+
+        ui_config = self.config.setdefault("ui", {})
+        raw_states = ui_config.get("splitter_sizes") if isinstance(ui_config.get("splitter_sizes"), dict) else {}
+        saved_sizes = self.normalize_splitter_sizes(
+            raw_states.get(splitter_key) if isinstance(raw_states, dict) else None,
+            splitter.count(),
+        )
+        if saved_sizes is not None:
+            return saved_sizes
+        default_sizes = self._splitter_default_sizes.get(splitter_key)
+        if default_sizes and len(default_sizes) == splitter.count():
+            return list(default_sizes)
+        return sizes
+
     def save_registered_splitter_states(self) -> None:
         ui_config = self.config.setdefault("ui", {})
         splitter_sizes = ui_config.setdefault("splitter_sizes", {})
         for splitter_key, splitter in self._registered_splitters.items():
-            sizes = [max(0, int(size)) for size in splitter.sizes()]
-            if len(sizes) == splitter.count():
+            sizes = self.resolve_splitter_sizes_for_save(splitter_key, splitter)
+            if sizes is not None and len(sizes) == splitter.count():
                 splitter_sizes[splitter_key] = sizes
         self.save_config_if_ready()
 
@@ -721,31 +814,31 @@ class ExcelSenderGUI(QWidget):
         raw_states = ui_config.get("splitter_sizes") if isinstance(ui_config.get("splitter_sizes"), dict) else {}
         layout_version = int(ui_config.get("splitter_layout_version") or 0)
         migrated = False
+        version_changed = layout_version < CURRENT_SPLITTER_LAYOUT_VERSION
         for splitter_key, splitter in self._registered_splitters.items():
             target_sizes: list[int] | None = None
-            raw_sizes = raw_states.get(splitter_key) if isinstance(raw_states, dict) else None
-            if isinstance(raw_sizes, list) and len(raw_sizes) == splitter.count():
-                try:
-                    target_sizes = [max(0, int(size)) for size in raw_sizes]
-                except (TypeError, ValueError):
-                    target_sizes = None
-            if splitter_key == "workbench.basic.left" and layout_version < CURRENT_SPLITTER_LAYOUT_VERSION:
-                default_sizes = self._splitter_default_sizes.get(splitter_key)
+            default_sizes = self._splitter_default_sizes.get(splitter_key)
+            saved_sizes = self.normalize_splitter_sizes(
+                raw_states.get(splitter_key) if isinstance(raw_states, dict) else None,
+                splitter.count(),
+            )
+            if self.should_use_startup_splitter_defaults(splitter_key, saved_sizes, layout_version):
                 if default_sizes and len(default_sizes) == splitter.count():
                     target_sizes = list(default_sizes)
-                    migrated = True
-            if target_sizes is None:
-                default_sizes = self._splitter_default_sizes.get(splitter_key)
-                if default_sizes and len(default_sizes) == splitter.count():
-                    target_sizes = list(default_sizes)
+                    if isinstance(raw_states, dict):
+                        raw_states[splitter_key] = list(target_sizes)
+                    if saved_sizes != target_sizes:
+                        migrated = True
+            elif saved_sizes is not None:
+                target_sizes = list(saved_sizes)
+            elif default_sizes and len(default_sizes) == splitter.count():
+                target_sizes = list(default_sizes)
             if target_sizes:
                 splitter.setSizes(target_sizes)
-        if layout_version < CURRENT_SPLITTER_LAYOUT_VERSION:
+        if version_changed:
             ui_config["splitter_layout_version"] = CURRENT_SPLITTER_LAYOUT_VERSION
-            if migrated:
-                self.save_registered_splitter_states()
-            else:
-                self.save_config_if_ready()
+        if migrated or version_changed:
+            self.save_config_if_ready()
 
     def resolve_semantic_tone(self, color: str | None) -> str:
         if not color:
@@ -773,6 +866,9 @@ class ExcelSenderGUI(QWidget):
             return
         if role == "section-title":
             widget.setStyleSheet(f"color:{tokens['text_primary']}; background: transparent;")
+            return
+        if role == "section-shell":
+            widget.setStyleSheet("background: transparent; border: none;")
             return
         if role == "overview":
             widget.setStyleSheet(f"color:{tokens['text_primary']}; background: transparent;")
@@ -916,12 +1012,12 @@ class ExcelSenderGUI(QWidget):
                 color: {tokens['text_primary']};
             }}
             QWidget#navigationPanel {{
-                background-color: {tokens['panel_bg']};
-                border: 1px solid {tokens['border']};
+                background-color: {tokens['window_bg']};
+                border: 1px solid {tokens['separator']};
                 border-radius: 14px;
             }}
             QTabWidget::pane {{
-                border: 1px solid {tokens['border']};
+                border: none;
                 background: {tokens['panel_bg']};
                 border-radius: 14px;
                 top: -1px;
@@ -1084,6 +1180,34 @@ class ExcelSenderGUI(QWidget):
                 color: {tokens['text_primary']};
                 border-color: {tokens['border_strong']};
             }}
+            QToolButton[role="toolbar"] {{
+                background-color: {tokens['secondary_bg']};
+                color: {tokens['secondary_text']};
+                border: 1px solid {tokens['secondary_border']};
+                border-radius: 10px;
+                padding: 4px 12px;
+                min-height: 34px;
+                font-weight: 500;
+            }}
+            QToolButton[role="toolbar"]:hover {{
+                border-color: {tokens['border_strong']};
+                color: {tokens['text_primary']};
+            }}
+            QToolButton[role="toolbar"]:disabled {{
+                background: {tokens['disabled_bg']};
+                color: {tokens['disabled_text']};
+                border-color: {tokens['disabled_bg']};
+            }}
+            QToolButton[role="inline-toggle"] {{
+                background: transparent;
+                color: {tokens['text_secondary']};
+                border: none;
+                padding: 2px 4px;
+                font-weight: 500;
+            }}
+            QToolButton[role="inline-toggle"]:hover {{
+                color: {tokens['text_primary']};
+            }}
             QHeaderView::section {{
                 background: {tokens['table_header_bg']};
                 color: {tokens['text_secondary']};
@@ -1120,15 +1244,34 @@ class ExcelSenderGUI(QWidget):
                 border: none;
             }}
             QSplitter::handle {{
-                background: {tokens['window_bg']};
+                background: {tokens['splitter_handle']};
             }}
             QSplitter::handle:hover {{
-                background: {tokens['separator']};
+                background: {tokens['splitter_handle_hover']};
             }}
             QSplitter {{}}
             QScrollArea {{
                 border: none;
                 background: transparent;
+            }}
+            QMenu {{
+                background: {tokens['panel_bg']};
+                color: {tokens['text_primary']};
+                border: 1px solid {tokens['border']};
+                border-radius: 10px;
+                padding: 6px;
+            }}
+            QMenu::item {{
+                padding: 7px 12px;
+                border-radius: 8px;
+            }}
+            QMenu::item:selected {{
+                background: {tokens['secondary_bg']};
+            }}
+            QMenu::separator {{
+                height: 1px;
+                background: {tokens['separator']};
+                margin: 6px 4px;
             }}
             QCheckBox, QRadioButton {{
                 color: {tokens['text_primary']};
@@ -1592,7 +1735,7 @@ class ExcelSenderGUI(QWidget):
             parent=page,
             stretch_factors=[4, 5],
             splitter_key="data_template.main",
-            default_sizes=[520, 640],
+            default_sizes=SPLITTER_STARTUP_DEFAULT_SIZES["data_template.main"],
         )
         layout.addWidget(self.data_template_splitter, stretch=1)
         return page
@@ -1615,7 +1758,7 @@ class ExcelSenderGUI(QWidget):
             parent=left_panel,
             stretch_factors=[0, 1],
             splitter_key="workbench.basic.left",
-            default_sizes=[220, 760],
+            default_sizes=SPLITTER_STARTUP_DEFAULT_SIZES["workbench.basic.left"],
         )
         left_layout.addWidget(self.basic_left_splitter, stretch=1)
 
@@ -1632,7 +1775,7 @@ class ExcelSenderGUI(QWidget):
             parent=right_panel,
             stretch_factors=[3, 2, 1],
             splitter_key="workbench.basic.right",
-            default_sizes=[300, 180, 170],
+            default_sizes=SPLITTER_STARTUP_DEFAULT_SIZES["workbench.basic.right"],
         )
         right_layout.addWidget(self.basic_right_splitter, stretch=1)
 
@@ -1642,7 +1785,7 @@ class ExcelSenderGUI(QWidget):
             parent=page,
             stretch_factors=[4, 5],
             splitter_key="workbench.basic.main",
-            default_sizes=[520, 650],
+            default_sizes=SPLITTER_STARTUP_DEFAULT_SIZES["workbench.basic.main"],
         )
         layout.addWidget(self.basic_splitter, stretch=1)
         self.refresh_basic_section_layout()
@@ -1906,7 +2049,7 @@ class ExcelSenderGUI(QWidget):
             parent=page,
             stretch_factors=[3, 2],
             splitter_key="local_store.main",
-            default_sizes=[640, 420],
+            default_sizes=SPLITTER_STARTUP_DEFAULT_SIZES["local_store.main"],
         )
         layout.addWidget(self.local_store_page_splitter, stretch=1)
         return page
@@ -1929,7 +2072,7 @@ class ExcelSenderGUI(QWidget):
             parent=left_panel,
             stretch_factors=[2, 5],
             splitter_key="workbench.send.left",
-            default_sizes=[220, 460],
+            default_sizes=SPLITTER_STARTUP_DEFAULT_SIZES["workbench.send.left"],
         )
         left_layout.addWidget(self.send_prepare_left_splitter, stretch=1)
 
@@ -1940,7 +2083,7 @@ class ExcelSenderGUI(QWidget):
             parent=page,
             stretch_factors=[5, 3],
             splitter_key="workbench.send.main",
-            default_sizes=[720, 420],
+            default_sizes=SPLITTER_STARTUP_DEFAULT_SIZES["workbench.send.main"],
         )
         layout.addWidget(self.send_prepare_splitter, stretch=1)
         return page
@@ -1958,7 +2101,7 @@ class ExcelSenderGUI(QWidget):
             parent=page,
             stretch_factors=[4, 3],
             splitter_key="task_center.main",
-            default_sizes=[620, 460],
+            default_sizes=SPLITTER_STARTUP_DEFAULT_SIZES["task_center.main"],
         )
         layout.addWidget(self.task_center_splitter, stretch=1)
         return page
@@ -2212,7 +2355,7 @@ class ExcelSenderGUI(QWidget):
             parent=group,
             stretch_factors=[1, 4],
             splitter_key="task_center.schedule",
-            default_sizes=[118, 452],
+            default_sizes=SPLITTER_STARTUP_DEFAULT_SIZES["task_center.schedule"],
         )
         layout.addWidget(schedule_splitter, stretch=1)
 
@@ -2220,6 +2363,7 @@ class ExcelSenderGUI(QWidget):
 
     def build_local_store_group(self) -> QGroupBox:
         group = QGroupBox("本地库数据")
+        group.setProperty("themeVariant", "page-shell")
         layout, _title_label = self.init_inline_section_group(group, "local_store_data")
 
         header_panel = QWidget(group)
@@ -2230,10 +2374,8 @@ class ExcelSenderGUI(QWidget):
         action_layout = QHBoxLayout()
         self.refresh_local_store_button = QPushButton("刷新本地库")
         self.refresh_local_store_button.clicked.connect(self.refresh_local_store_page)
-        self.use_local_store_button = QPushButton("筛选并导入发送计划")
-        self.use_local_store_button.clicked.connect(self.filter_local_store_into_task)
+        self.set_button_role(self.refresh_local_store_button, "secondary", min_height=40)
         action_layout.addWidget(self.refresh_local_store_button)
-        action_layout.addWidget(self.use_local_store_button)
         action_layout.addStretch(1)
         header_layout.addLayout(action_layout)
 
@@ -2253,7 +2395,7 @@ class ExcelSenderGUI(QWidget):
             parent=group,
             stretch_factors=[1, 4],
             splitter_key="local_store.dataset_shell",
-            default_sizes=[72, 508],
+            default_sizes=SPLITTER_STARTUP_DEFAULT_SIZES["local_store.dataset_shell"],
         )
         layout.addWidget(local_store_splitter, stretch=1)
 
@@ -2271,13 +2413,29 @@ class ExcelSenderGUI(QWidget):
         info_layout.setSpacing(8)
 
         summary_label = QLabel(f"{DATASET_LABELS[dataset_type]}库暂无数据。")
-        self.style_helper_label(summary_label)
+        self.style_helper_label(summary_label, color="#555")
         info_layout.addWidget(summary_label)
 
-        columns_view = QPlainTextEdit(self)
-        columns_view.setReadOnly(True)
-        columns_view.setFixedHeight(60)
-        info_layout.addWidget(columns_view)
+        toolbar_layout = QHBoxLayout()
+        toolbar_layout.setContentsMargins(0, 0, 0, 0)
+        toolbar_layout.setSpacing(8)
+
+        columns_summary_label = QLabel("显示列：导入后可设置。")
+        self.style_helper_label(columns_summary_label, color="#555")
+        toolbar_layout.addWidget(columns_summary_label, stretch=1)
+
+        columns_button = QToolButton(panel)
+        columns_button.setText("⚙ 列设置")
+        columns_button.setProperty("role", "toolbar")
+        columns_button.setPopupMode(QToolButton.InstantPopup)
+        columns_button.setEnabled(False)
+        columns_button.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
+        columns_menu = QMenu(columns_button)
+        columns_menu.aboutToShow.connect(lambda key=dataset_type: self.populate_local_store_column_menu(key))
+        columns_button.setMenu(columns_menu)
+        toolbar_layout.addWidget(columns_button, 0, Qt.AlignRight | Qt.AlignVCenter)
+
+        info_layout.addLayout(toolbar_layout)
 
         table = QTableWidget(0, 0, self)
         table.verticalHeader().setVisible(False)
@@ -2291,19 +2449,21 @@ class ExcelSenderGUI(QWidget):
         dataset_splitter = self.build_splitter(
             Qt.Vertical,
             [
-                self.configure_splitter_pane(info_panel, min_height=100, vertical_policy=QSizePolicy.Preferred),
+                self.configure_splitter_pane(info_panel, min_height=72, vertical_policy=QSizePolicy.Preferred),
                 self.configure_splitter_pane(table, min_height=220),
             ],
             parent=panel,
             stretch_factors=[1, 4],
             splitter_key=f"local_store.{dataset_type}",
-            default_sizes=[110, 360],
+            default_sizes=SPLITTER_STARTUP_DEFAULT_SIZES[f"local_store.{dataset_type}"],
         )
         layout.addWidget(dataset_splitter, stretch=1)
 
         return panel, {
             "summary_label": summary_label,
-            "columns_view": columns_view,
+            "columns_summary_label": columns_summary_label,
+            "columns_button": columns_button,
+            "columns_menu": columns_menu,
             "table": table,
         }
 
@@ -2357,10 +2517,11 @@ class ExcelSenderGUI(QWidget):
         target_layout.setContentsMargins(0, 0, 0, 0)
         target_layout.setSpacing(8)
 
-        self.send_target_column_input = QLineEdit(self)
-        self.send_target_column_input.setPlaceholderText("微信号")
-        self.send_target_column_input.textChanged.connect(self.on_send_target_column_changed)
-        target_layout.addWidget(self.send_target_column_input)
+        self.send_target_column_combo = QComboBox(self)
+        self.send_target_column_combo.setEnabled(False)
+        self.send_target_column_combo.setMinimumWidth(144)
+        self.send_target_column_combo.currentIndexChanged.connect(self.on_send_target_column_changed)
+        target_layout.addWidget(self.send_target_column_combo)
 
         self.send_target_status_label = QLabel("默认按“微信号”搜索。")
         self.style_helper_label(self.send_target_status_label, color="#555")
@@ -2372,7 +2533,8 @@ class ExcelSenderGUI(QWidget):
         self.columns_view = QPlainTextEdit(self)
         self.columns_view.setReadOnly(True)
         self.columns_view.setPlaceholderText("")
-        self.columns_view.setFixedHeight(64)
+        self.columns_view.setMinimumHeight(120)
+        self.columns_view.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Expanding)
         self.update_columns_reference_presentation()
 
         columns_panel_content = QWidget(group)
@@ -2380,7 +2542,7 @@ class ExcelSenderGUI(QWidget):
         columns_panel_layout.setContentsMargins(0, 0, 0, 0)
         columns_panel_layout.setSpacing(6)
         columns_panel_layout.addWidget(self.columns_empty_label)
-        columns_panel_layout.addWidget(self.columns_view)
+        columns_panel_layout.addWidget(self.columns_view, stretch=1)
 
         source_section = self.build_section_panel(
             parent=group,
@@ -2412,7 +2574,7 @@ class ExcelSenderGUI(QWidget):
             parent=group,
             stretch_factors=[2, 2, 3],
             splitter_key="data_template.excel",
-            default_sizes=[220, 190, 250],
+            default_sizes=SPLITTER_STARTUP_DEFAULT_SIZES["data_template.excel"],
         )
         layout.addWidget(excel_splitter, stretch=1)
 
@@ -2534,7 +2696,7 @@ class ExcelSenderGUI(QWidget):
             parent=group,
             stretch_factors=[3, 1, 2],
             splitter_key="data_template.template",
-            default_sizes=[340, 110, 300],
+            default_sizes=SPLITTER_STARTUP_DEFAULT_SIZES["data_template.template"],
         )
         layout.addWidget(template_splitter, stretch=1)
 
@@ -2542,57 +2704,122 @@ class ExcelSenderGUI(QWidget):
 
     def build_filter_group(self) -> QGroupBox:
         group = QGroupBox("本地库筛选条件")
+        group.setProperty("themeVariant", "page-shell")
         layout, _title_label = self.init_inline_section_group(group, "local_store_filter")
+        layout.setSpacing(12)
 
-        tip_label = QLabel(
-            "筛选作用于“本地库数据”页当前选中的页签。多个字段请用英文逗号分隔；规则留空时，会把当前页签全部数据带入确认弹窗。"
-        )
-        self.style_helper_label(tip_label)
-        layout.addWidget(tip_label)
+        help_card = self.build_panel_card(group)
+        help_card.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Maximum)
+        help_layout = QVBoxLayout(help_card)
+        help_layout.setContentsMargins(12, 10, 12, 10)
+        help_layout.setSpacing(6)
 
-        fields_layout = QHBoxLayout()
-        fields_layout.addWidget(QLabel("筛选字段"))
+        tip_label = QLabel("ℹ 筛选只作用于左侧当前页签；多个字段请用英文逗号分隔。")
+        self.style_helper_label(tip_label, color="#555")
+        help_layout.addWidget(tip_label)
+
+        self.filter_scope_summary_label = QLabel("当前页签：好友库（暂无数据）")
+        self.style_helper_label(self.filter_scope_summary_label, color="#555")
+        help_layout.addWidget(self.filter_scope_summary_label)
+        layout.addWidget(help_card)
+
+        form_layout = QGridLayout()
+        form_layout.setContentsMargins(0, 0, 0, 0)
+        form_layout.setHorizontalSpacing(12)
+        form_layout.setVerticalSpacing(10)
+
+        fields_label = QLabel("筛选字段")
+        fields_label.setMinimumWidth(72)
+        fields_label.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
+        form_layout.addWidget(fields_label, 0, 0)
         self.filter_fields_input = QLineEdit(self)
         self.filter_fields_input.setPlaceholderText("例如：显示名称,备注,昵称")
         self.filter_fields_input.textChanged.connect(self.on_filter_fields_changed)
-        fields_layout.addWidget(self.filter_fields_input)
-        layout.addLayout(fields_layout)
+        form_layout.addWidget(self.filter_fields_input, 0, 1)
 
-        pattern_layout = QHBoxLayout()
-        pattern_layout.addWidget(QLabel("正则规则"))
+        pattern_label = QLabel("正则规则")
+        pattern_label.setMinimumWidth(72)
+        pattern_label.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
+        form_layout.addWidget(pattern_label, 1, 0)
         self.filter_pattern_input = QLineEdit(self)
         self.filter_pattern_input.setPlaceholderText("例如：陈|到期|高意向；留空=当前页签全量")
         self.filter_pattern_input.textChanged.connect(self.on_filter_pattern_changed)
-        pattern_layout.addWidget(self.filter_pattern_input)
-        layout.addLayout(pattern_layout)
+        form_layout.addWidget(self.filter_pattern_input, 1, 1)
+        form_container = QWidget(group)
+        form_container.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Maximum)
+        form_container.setLayout(form_layout)
+        layout.addWidget(form_container)
 
-        action_layout = QHBoxLayout()
+        option_layout = QHBoxLayout()
+        option_layout.setContentsMargins(0, 0, 0, 0)
+        option_layout.setSpacing(8)
+
         self.filter_ignore_case_checkbox = QCheckBox("忽略大小写", self)
         self.filter_ignore_case_checkbox.toggled.connect(self.on_filter_ignore_case_changed)
-        self.apply_filter_button = QPushButton("筛选并导入发送计划")
-        self.apply_filter_button.clicked.connect(self.filter_local_store_into_task)
-        self.reset_filter_button = QPushButton("重置条件")
-        self.reset_filter_button.clicked.connect(self.reset_local_filter_inputs)
-        action_layout.addWidget(self.filter_ignore_case_checkbox)
-        action_layout.addWidget(self.apply_filter_button)
-        action_layout.addWidget(self.reset_filter_button)
-        action_layout.addStretch(1)
-        layout.addLayout(action_layout)
+        option_layout.addWidget(self.filter_ignore_case_checkbox)
+        option_layout.addStretch(1)
+        option_container = QWidget(group)
+        option_container.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Maximum)
+        option_container.setLayout(option_layout)
+        layout.addWidget(option_container)
 
-        self.filter_status_label = QLabel("请先在上方选择好友库或群聊库，再按条件筛选并导入发送计划。")
-        self.style_helper_label(self.filter_status_label, color="#555")
-        layout.addWidget(self.filter_status_label)
+        examples_card = self.build_panel_card(group)
+        examples_card.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Maximum)
+        examples_layout = QVBoxLayout(examples_card)
+        examples_layout.setContentsMargins(12, 10, 12, 10)
+        examples_layout.setSpacing(6)
 
-        examples_label = QLabel(
-            "场景规则示例：\n"
+        examples_header_layout = QHBoxLayout()
+        examples_header_layout.setContentsMargins(0, 0, 0, 0)
+        examples_header_layout.setSpacing(8)
+        examples_title = QLabel("场景规则示例")
+        self.style_helper_label(examples_title, color="#555")
+        examples_header_layout.addWidget(examples_title)
+        examples_header_layout.addStretch(1)
+
+        self.filter_examples_toggle_button = QToolButton(group)
+        self.filter_examples_toggle_button.setProperty("role", "inline-toggle")
+        self.filter_examples_toggle_button.setCheckable(True)
+        self.filter_examples_toggle_button.toggled.connect(self.set_filter_examples_expanded)
+        examples_header_layout.addWidget(self.filter_examples_toggle_button, 0, Qt.AlignRight | Qt.AlignVCenter)
+        examples_layout.addLayout(examples_header_layout)
+        self.filter_examples_card = examples_card
+
+        self.filter_examples_body_label = QLabel(
             "1. 到期提醒：到期|续费|复购\n"
             "2. 跟进客户：待跟进|未回复|沉默\n"
             "3. 地区筛选：上海|北京|深圳\n"
             "4. 精确匹配：^高意向客户$\n"
             "5. 排除空白场景：^(?!\\s*$).+"
         )
-        self.style_helper_label(examples_label, color="#555")
-        layout.addWidget(examples_label)
+        self.style_helper_label(self.filter_examples_body_label, color="#555")
+        self.filter_examples_body_label.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Maximum)
+        examples_layout.addWidget(self.filter_examples_body_label)
+        layout.addWidget(examples_card)
+        self.set_filter_examples_expanded(False)
+
+        action_layout = QHBoxLayout()
+        action_layout.setContentsMargins(0, 0, 0, 0)
+        action_layout.setSpacing(8)
+        self.apply_filter_button = QPushButton("筛选并导入发送计划")
+        self.apply_filter_button.clicked.connect(self.filter_local_store_into_task)
+        self.reset_filter_button = QPushButton("重置条件")
+        self.reset_filter_button.clicked.connect(self.reset_local_filter_inputs)
+        self.set_button_role(self.apply_filter_button, "primary", min_height=42)
+        self.set_button_role(self.reset_filter_button, "secondary", min_height=40)
+        action_layout.addStretch(1)
+        action_layout.addWidget(self.reset_filter_button)
+        action_layout.addWidget(self.apply_filter_button)
+        action_container = QWidget(group)
+        action_container.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Maximum)
+        action_container.setLayout(action_layout)
+        layout.addWidget(action_container)
+
+        self.filter_status_label = QLabel("请先在上方选择好友库或群聊库，再按条件筛选并导入发送计划。")
+        self.style_helper_label(self.filter_status_label, color="#555")
+        self.filter_status_label.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Maximum)
+        layout.addWidget(self.filter_status_label)
+        layout.addStretch(1)
 
         return group
 
@@ -2712,7 +2939,7 @@ class ExcelSenderGUI(QWidget):
         try:
             self.excel_path_input.setText(self.config["excel"]["path"])
             self.basic_excel_path_input.setText(self.config["excel"]["path"])
-            self.send_target_column_input.setText(self.config["excel"]["send_target_column"])
+            self.update_send_target_column_options()
             self.filter_fields_input.setText(self.config["filter"]["fields"])
             self.filter_pattern_input.setText(self.config["filter"]["pattern"])
             self.filter_ignore_case_checkbox.setChecked(self.config["filter"]["ignore_case"])
@@ -2825,16 +3052,21 @@ class ExcelSenderGUI(QWidget):
     def refresh_local_store_page(self) -> None:
         summaries = self.local_store.get_current_import_summaries()
         if not summaries:
-            for view_refs in self.local_store_views.values():
+            for dataset_type, view_refs in self.local_store_views.items():
                 summary_label = view_refs["summary_label"]
-                columns_view = view_refs["columns_view"]
+                columns_summary_label = view_refs["columns_summary_label"]
+                columns_button = view_refs["columns_button"]
                 table = view_refs["table"]
                 assert isinstance(summary_label, QLabel)
-                assert isinstance(columns_view, QPlainTextEdit)
+                assert isinstance(columns_summary_label, QLabel)
+                assert isinstance(columns_button, QToolButton)
                 assert isinstance(table, QTableWidget)
                 self.set_label_tone(summary_label, "muted")
                 summary_label.setText("暂无数据。")
-                columns_view.clear()
+                self.local_store_all_columns[dataset_type] = []
+                self.local_store_visible_columns[dataset_type] = []
+                columns_summary_label.setText("显示列：导入后可设置。")
+                columns_button.setEnabled(False)
                 table.setColumnCount(0)
                 table.setRowCount(0)
             self.update_local_filter_scope()
@@ -2845,27 +3077,27 @@ class ExcelSenderGUI(QWidget):
             summary = summaries.get(dataset_type)
             view_refs = self.local_store_views[dataset_type]
             summary_label = view_refs["summary_label"]
-            columns_view = view_refs["columns_view"]
             table = view_refs["table"]
             assert isinstance(summary_label, QLabel)
-            assert isinstance(columns_view, QPlainTextEdit)
             assert isinstance(table, QTableWidget)
 
             if summary is None:
                 self.set_label_tone(summary_label, "muted")
                 summary_label.setText(f"{DATASET_LABELS[dataset_type]}库暂无 current 批次。")
-                columns_view.clear()
+                self.local_store_all_columns[dataset_type] = []
+                self.local_store_visible_columns[dataset_type] = []
+                self.update_local_store_column_presentation(dataset_type)
                 table.setColumnCount(0)
                 table.setRowCount(0)
                 continue
 
             records, columns, _ = self.local_store.load_current_contacts(dataset_type)
             has_any_records = has_any_records or bool(records)
-            self.set_label_tone(summary_label, "success")
+            self.sync_local_store_visible_columns(dataset_type, columns)
+            self.set_label_tone(summary_label, "muted")
             summary_label.setText(
-                f"{summary.source_name} | 导入时间：{summary.imported_at} | 共 {summary.row_count} 行"
+                f"来源：{summary.source_name} ｜ 导入时间：{summary.imported_at} ｜ 共 {summary.row_count} 行"
             )
-            columns_view.setPlainText("、".join(columns))
             table.setColumnCount(len(columns))
             table.setHorizontalHeaderLabels(columns)
             table.setRowCount(len(records))
@@ -2886,8 +3118,10 @@ class ExcelSenderGUI(QWidget):
                 max_auto_width=340,
             )
             table.resizeRowsToContents()
+            self.apply_local_store_column_visibility(dataset_type)
 
-        self.use_local_store_button.setEnabled(has_any_records)
+        if hasattr(self, "apply_filter_button"):
+            self.apply_filter_button.setEnabled(has_any_records)
         self.update_local_filter_scope()
 
     def open_local_store_page(self) -> None:
@@ -3137,6 +3371,40 @@ class ExcelSenderGUI(QWidget):
         else:
             self.basic_variable_status_label.setText("导入 Excel 后会在这里显示可插入的变量。")
             self.set_label_tone(self.basic_variable_status_label, "muted")
+
+    def update_send_target_column_options(self) -> None:
+        if not hasattr(self, "send_target_column_combo"):
+            return
+
+        preferred_column = str(
+            (self.config.get("excel") or {}).get("send_target_column")
+            or DEFAULT_SEND_TARGET_COLUMN
+        ).strip() or DEFAULT_SEND_TARGET_COLUMN
+        display_columns = [str(column).strip() for column in self.columns if str(column).strip()]
+        resolved_column = preferred_column
+
+        self.send_target_column_combo.blockSignals(True)
+        self.send_target_column_combo.clear()
+        for column in display_columns:
+            self.send_target_column_combo.addItem(column, column)
+
+        if display_columns:
+            if preferred_column not in display_columns:
+                if DEFAULT_SEND_TARGET_COLUMN in display_columns:
+                    resolved_column = DEFAULT_SEND_TARGET_COLUMN
+                else:
+                    resolved_column = display_columns[0]
+            selected_index = self.send_target_column_combo.findData(resolved_column)
+            self.send_target_column_combo.setCurrentIndex(max(selected_index, 0))
+            self.send_target_column_combo.setEnabled(True)
+        else:
+            self.send_target_column_combo.addItem(resolved_column, resolved_column)
+            self.send_target_column_combo.setCurrentIndex(0)
+            self.send_target_column_combo.setEnabled(False)
+
+        self.send_target_column_combo.blockSignals(False)
+        self.config["excel"]["send_target_column"] = resolved_column
+        self.save_config_if_ready()
 
     def insert_basic_variable(self) -> None:
         field_name = str(self.basic_variable_combo.currentData() or "").strip()
@@ -3524,6 +3792,170 @@ class ExcelSenderGUI(QWidget):
     def on_local_store_tab_changed(self, _index: int) -> None:
         self.update_local_filter_scope()
 
+    def set_filter_examples_expanded(self, expanded: bool) -> None:
+        if hasattr(self, "filter_examples_body_label"):
+            self.filter_examples_body_label.setVisible(expanded)
+            self.filter_examples_body_label.updateGeometry()
+        if hasattr(self, "filter_examples_card"):
+            self.filter_examples_card.updateGeometry()
+            self.filter_examples_card.adjustSize()
+        if hasattr(self, "filter_examples_toggle_button"):
+            self.filter_examples_toggle_button.blockSignals(True)
+            self.filter_examples_toggle_button.setChecked(expanded)
+            self.filter_examples_toggle_button.blockSignals(False)
+            self.filter_examples_toggle_button.setText("收起" if expanded else "查看示例")
+            self.filter_examples_toggle_button.setArrowType(Qt.DownArrow if expanded else Qt.RightArrow)
+
+    def sync_local_store_visible_columns(self, dataset_type: str, columns: list[str]) -> list[str]:
+        previous_columns = list(self.local_store_all_columns.get(dataset_type, []))
+        ordered_columns = [str(column) for column in columns]
+        existing = [
+            column
+            for column in self.local_store_visible_columns.get(dataset_type, [])
+            if column in ordered_columns
+        ]
+        if existing:
+            visible_columns = existing + [
+                column
+                for column in ordered_columns
+                if column not in previous_columns and column not in existing
+            ]
+        else:
+            visible_columns = list(ordered_columns)
+        self.local_store_all_columns[dataset_type] = list(ordered_columns)
+        self.local_store_visible_columns[dataset_type] = visible_columns
+        return visible_columns
+
+    def format_local_store_column_preview(self, columns: list[str], max_items: int = 3) -> str:
+        if not columns:
+            return "暂无"
+        preview = "、".join(columns[:max_items])
+        remaining = len(columns) - max_items
+        if remaining > 0:
+            preview += f" +{remaining}"
+        return preview
+
+    def update_local_store_column_presentation(self, dataset_type: str) -> None:
+        view_refs = self.local_store_views.get(dataset_type)
+        if not view_refs:
+            return
+
+        columns_summary_label = view_refs.get("columns_summary_label")
+        columns_button = view_refs.get("columns_button")
+        if not isinstance(columns_summary_label, QLabel) or not isinstance(columns_button, QToolButton):
+            return
+
+        columns = list(self.local_store_all_columns.get(dataset_type, []))
+        visible_columns = [
+            column
+            for column in self.local_store_visible_columns.get(dataset_type, columns)
+            if column in columns
+        ]
+
+        if not columns:
+            columns_summary_label.setText("显示列：导入后可设置。")
+            columns_button.setEnabled(False)
+            return
+
+        if not visible_columns:
+            visible_columns = [columns[0]]
+            self.local_store_visible_columns[dataset_type] = visible_columns
+
+        if len(visible_columns) == len(columns):
+            columns_summary_label.setText(f"显示列：全部（{self.format_local_store_column_preview(visible_columns)}）")
+        else:
+            columns_summary_label.setText(
+                f"已显示 {len(visible_columns)}/{len(columns)} 列（{self.format_local_store_column_preview(visible_columns)}）"
+            )
+        columns_button.setEnabled(True)
+
+    def apply_local_store_column_visibility(self, dataset_type: str) -> None:
+        view_refs = self.local_store_views.get(dataset_type)
+        if not view_refs:
+            return
+        table = view_refs.get("table")
+        if not isinstance(table, QTableWidget):
+            return
+
+        columns = list(self.local_store_all_columns.get(dataset_type, []))
+        visible_columns = [
+            column
+            for column in self.local_store_visible_columns.get(dataset_type, columns)
+            if column in columns
+        ]
+        if columns and not visible_columns:
+            visible_columns = [columns[0]]
+            self.local_store_visible_columns[dataset_type] = visible_columns
+
+        for index, column_name in enumerate(columns):
+            table.setColumnHidden(index, column_name not in visible_columns)
+        self.update_local_store_column_presentation(dataset_type)
+
+    def populate_local_store_column_menu(self, dataset_type: str) -> None:
+        view_refs = self.local_store_views.get(dataset_type)
+        if not view_refs:
+            return
+
+        columns_menu = view_refs.get("columns_menu")
+        if not isinstance(columns_menu, QMenu):
+            return
+
+        columns_menu.clear()
+        columns = list(self.local_store_all_columns.get(dataset_type, []))
+        visible_columns = [
+            column
+            for column in self.local_store_visible_columns.get(dataset_type, columns)
+            if column in columns
+        ]
+
+        if not columns:
+            empty_action = columns_menu.addAction("暂无可配置列")
+            empty_action.setEnabled(False)
+            return
+
+        title_action = columns_menu.addAction("勾选需要显示的列（至少保留 1 列）")
+        title_action.setEnabled(False)
+        columns_menu.addSeparator()
+        for column_name in columns:
+            action = columns_menu.addAction(column_name)
+            action.setCheckable(True)
+            action.setChecked(column_name in visible_columns)
+            action.toggled.connect(
+                lambda checked, key=dataset_type, name=column_name, current_action=action: self.on_local_store_column_toggled(
+                    key,
+                    name,
+                    checked,
+                    current_action,
+                )
+            )
+
+    def on_local_store_column_toggled(self, dataset_type: str, column_name: str, checked: bool, action: Any) -> None:
+        columns = list(self.local_store_all_columns.get(dataset_type, []))
+        if column_name not in columns:
+            return
+
+        visible_columns = [
+            column
+            for column in self.local_store_visible_columns.get(dataset_type, columns)
+            if column in columns
+        ]
+        if checked:
+            if column_name not in visible_columns:
+                visible_columns.append(column_name)
+                visible_columns.sort(key=columns.index)
+        else:
+            if column_name not in visible_columns:
+                return
+            if len(visible_columns) <= 1:
+                action.blockSignals(True)
+                action.setChecked(True)
+                action.blockSignals(False)
+                return
+            visible_columns = [column for column in visible_columns if column != column_name]
+
+        self.local_store_visible_columns[dataset_type] = visible_columns
+        self.apply_local_store_column_visibility(dataset_type)
+
     def get_active_local_dataset_type(self) -> str:
         if not hasattr(self, "local_store_tabs"):
             return DATASET_FRIEND
@@ -3534,24 +3966,23 @@ class ExcelSenderGUI(QWidget):
         return DATASET_FRIEND
 
     def update_local_filter_scope(self) -> None:
-        if not hasattr(self, "local_filter_scope_label"):
-            return
-
         dataset_type = self.get_active_local_dataset_type()
         summary = self.local_store.get_current_import_summary(dataset_type)
         if summary is None:
-            self.set_label_tone(self.local_filter_scope_label, "muted")
-            self.local_filter_scope_label.setText(
-                f"当前筛选对象：{DATASET_LABELS[dataset_type]}库当前批次（暂无数据）。"
-            )
-            self.use_local_store_button.setEnabled(False)
+            if hasattr(self, "filter_scope_summary_label"):
+                self.set_label_tone(self.filter_scope_summary_label, "muted")
+                self.filter_scope_summary_label.setText(f"当前页签：{DATASET_LABELS[dataset_type]}库（暂无数据）")
+            if hasattr(self, "apply_filter_button"):
+                self.apply_filter_button.setEnabled(False)
             return
 
-        self.set_label_tone(self.local_filter_scope_label, "success")
-        self.local_filter_scope_label.setText(
-            f"当前筛选对象：{summary.dataset_label}库当前批次，来源 {summary.source_name}，共 {summary.row_count} 行。"
-        )
-        self.use_local_store_button.setEnabled(summary.row_count > 0)
+        if hasattr(self, "filter_scope_summary_label"):
+            self.set_label_tone(self.filter_scope_summary_label, "muted")
+            self.filter_scope_summary_label.setText(
+                f"当前页签：{summary.dataset_label}库 ｜ 来源：{summary.source_name} ｜ {summary.row_count} 行"
+            )
+        if hasattr(self, "apply_filter_button"):
+            self.apply_filter_button.setEnabled(summary.row_count > 0)
 
     def activate_local_store_for_send(self) -> None:
         self.filter_local_store_into_task()
@@ -3793,6 +4224,7 @@ class ExcelSenderGUI(QWidget):
         self.columns = list(columns)
         self.records_loaded = True
         self.loaded_excel_path = loaded_path
+        self.update_send_target_column_options()
         self.update_columns_reference_presentation()
         self.update_preview_headers()
         self.update_send_target_column_status()
@@ -3826,8 +4258,8 @@ class ExcelSenderGUI(QWidget):
         self.update_data_info_label()
         self.render_preview()
 
-    def on_send_target_column_changed(self, value: str) -> None:
-        self.config["excel"]["send_target_column"] = value.strip() or DEFAULT_SEND_TARGET_COLUMN
+    def on_send_target_column_changed(self, _index: int) -> None:
+        self.config["excel"]["send_target_column"] = self.get_send_target_column()
         self.save_config_if_ready()
         if self.current_task_id is not None:
             self.clear_task_snapshot("已修改发送识别列，任务快照已失效，请重新从本地库筛选并导入发送计划。")
@@ -3953,7 +4385,6 @@ class ExcelSenderGUI(QWidget):
         if hasattr(self, "columns_empty_label"):
             self.columns_empty_label.setVisible(not has_columns)
         self.columns_view.setVisible(has_columns)
-        self.columns_view.setFixedHeight(72 if len(self.columns) > 8 else 64)
 
     def update_common_attachment_presentation(self) -> None:
         if not hasattr(self, "common_attachment_table"):
@@ -4746,6 +5177,7 @@ class ExcelSenderGUI(QWidget):
             self.current_batch_ids = {}
             self.current_task_id = None
             self.active_source_mode = SOURCE_MODE_FILE
+            self.update_send_target_column_options()
             self.update_columns_reference_presentation()
             self.data_info_label.setText("读取失败。")
             self.set_label_tone(self.filter_status_label, "warning")
@@ -5068,7 +5500,15 @@ class ExcelSenderGUI(QWidget):
         self.execution_overview_label.setText(text)
 
     def get_send_target_column(self) -> str:
-        return self.send_target_column_input.text().strip() or DEFAULT_SEND_TARGET_COLUMN
+        if hasattr(self, "send_target_column_combo"):
+            selected_value = str(
+                self.send_target_column_combo.currentData()
+                or self.send_target_column_combo.currentText()
+                or ""
+            ).strip()
+            if selected_value:
+                return selected_value
+        return str((self.config.get("excel") or {}).get("send_target_column") or DEFAULT_SEND_TARGET_COLUMN).strip() or DEFAULT_SEND_TARGET_COLUMN
 
     def resolve_local_db_target_value(self, row: dict[str, str]) -> str:
         selected_column = self.get_send_target_column()

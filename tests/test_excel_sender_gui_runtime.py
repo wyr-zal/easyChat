@@ -19,8 +19,51 @@ from PyQt5.QtWidgets import QPushButton
 from PyQt5.QtWidgets import QSizePolicy
 from PyQt5.QtWidgets import QSplitter
 
-from excel_sender_gui import ExcelSenderGUI
+from excel_sender_gui import (
+    CURRENT_SPLITTER_LAYOUT_VERSION,
+    PAGE_KEY_DATA_TEMPLATE,
+    PAGE_KEY_LOCAL_STORE,
+    PAGE_KEY_TASK_CENTER,
+    PAGE_KEY_WORKBENCH,
+    SPLITTER_STARTUP_DEFAULT_SIZES,
+    WORKBENCH_VIEW_BASIC,
+    WORKBENCH_VIEW_SEND,
+    ExcelSenderGUI,
+)
 from local_contact_store import LocalContactStore, SOURCE_MODE_JSON, SCHEDULE_STATUS_FAILED
+
+EXPECTED_STARTUP_SPLITTER_SIZES = {
+    "workbench.basic.left": [250, 761],
+    "workbench.basic.right": [432, 305, 270],
+    "workbench.basic.main": [710, 710],
+    "data_template.excel": [346, 303, 389],
+    "data_template.template": [245, 246, 547],
+    "data_template.main": [787, 633],
+    "local_store.friend": [126, 775],
+    "local_store.group": [126, 775],
+    "local_store.dataset_shell": [83, 957],
+    "local_store.main": [910, 510],
+    "workbench.send.left": [286, 725],
+    "workbench.send.main": [844, 576],
+    "task_center.schedule": [111, 794],
+    "task_center.main": [1116, 304],
+}
+LEGACY_STARTUP_SPLITTER_SIZES = {
+    "workbench.basic.left": [220, 791],
+    "workbench.basic.right": [465, 279, 263],
+    "workbench.basic.main": [631, 789],
+    "data_template.excel": [346, 299, 393],
+    "data_template.template": [471, 152, 415],
+    "data_template.main": [637, 783],
+    "local_store.friend": [153, 702],
+    "local_store.group": [153, 702],
+    "local_store.dataset_shell": [129, 911],
+    "local_store.main": [857, 563],
+    "workbench.send.left": [327, 684],
+    "workbench.send.main": [897, 523],
+    "task_center.schedule": [187, 718],
+    "task_center.main": [815, 605],
+}
 
 
 class _RunningThread:
@@ -42,6 +85,13 @@ class ExcelSenderGuiRuntimeTests(unittest.TestCase):
         window.setAttribute(Qt.WA_DontShowOnScreen, True)
         window.setAttribute(Qt.WA_ShowWithoutActivating, True)
         return window
+
+    def open_page(self, window: ExcelSenderGUI, page_key: str, workbench_view: str | None = None) -> None:
+        if workbench_view is None:
+            window.navigate_to(page_key, persist=False)
+        else:
+            window.navigate_to(page_key, workbench_view, persist=False)
+        self.app.processEvents()
 
     def test_normalize_attachment_items_accepts_json_text(self) -> None:
         with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp_dir:
@@ -159,12 +209,12 @@ class ExcelSenderGuiRuntimeTests(unittest.TestCase):
             try:
                 self.assertEqual(window.data_template_excel_group.property("themeVariant"), "page-shell")
                 self.assertEqual(window.data_template_template_group.property("themeVariant"), "page-shell")
-                self.assertEqual(window.data_template_source_section.property("themeStyleRole"), "section-panel")
-                self.assertEqual(window.data_template_target_section.property("themeStyleRole"), "section-panel")
-                self.assertEqual(window.data_template_columns_section.property("themeStyleRole"), "section-panel")
-                self.assertEqual(window.data_template_template_section.property("themeStyleRole"), "section-panel")
-                self.assertEqual(window.data_template_placeholder_section.property("themeStyleRole"), "section-panel")
-                self.assertEqual(window.data_template_attachment_section.property("themeStyleRole"), "section-panel")
+                self.assertEqual(window.data_template_source_section.property("themeStyleRole"), "section-shell")
+                self.assertEqual(window.data_template_target_section.property("themeStyleRole"), "section-shell")
+                self.assertEqual(window.data_template_columns_section.property("themeStyleRole"), "section-shell")
+                self.assertEqual(window.data_template_template_section.property("themeStyleRole"), "section-shell")
+                self.assertEqual(window.data_template_placeholder_section.property("themeStyleRole"), "section-shell")
+                self.assertEqual(window.data_template_attachment_section.property("themeStyleRole"), "section-shell")
                 self.assertEqual(window.columns_empty_label.property("themeStyleRole"), "section-empty")
                 self.assertEqual(window.common_attachment_empty_label.property("themeStyleRole"), "section-empty")
                 self.assertEqual(window._registered_splitters["data_template.template"].count(), 3)
@@ -176,6 +226,12 @@ class ExcelSenderGuiRuntimeTests(unittest.TestCase):
                     window.data_template_placeholder_section,
                     window.data_template_attachment_section,
                 ):
+                    section_cards = [
+                        frame
+                        for frame in section.findChildren(QFrame)
+                        if frame.property("themeStyleRole") == "section-panel"
+                    ]
+                    self.assertEqual(len(section_cards), 1)
                     self.assertFalse(
                         any(
                             frame.property("themeStyleRole") == "separator"
@@ -222,7 +278,95 @@ class ExcelSenderGuiRuntimeTests(unittest.TestCase):
             finally:
                 window.close()
 
-    def test_old_basic_left_splitter_sizes_migrate_to_compact_ratio(self) -> None:
+    def test_startup_splitter_defaults_match_screenshot_layouts(self) -> None:
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp_dir:
+            tmp = Path(tmp_dir)
+            window = self.create_window(tmp)
+            try:
+                window.show()
+                self.app.processEvents()
+                expected_defaults = {
+                    "workbench.basic.left": [250, 761],
+                    "workbench.basic.right": [432, 305, 270],
+                    "workbench.basic.main": [701, 701],
+                    "data_template.excel": [341, 299, 384],
+                    "data_template.template": [242, 242, 540],
+                    "data_template.main": [777, 625],
+                    "local_store.friend": [124, 764],
+                    "local_store.group": [124, 764],
+                    "local_store.dataset_shell": [82, 944],
+                    "local_store.main": [898, 504],
+                    "workbench.send.left": [286, 725],
+                    "workbench.send.main": [833, 569],
+                    "task_center.schedule": [108, 769],
+                    "task_center.main": [1102, 300],
+                }
+                self.assertEqual(window._splitter_default_sizes, expected_defaults)
+
+                for page_key, workbench_view, splitter_keys in (
+                    (
+                        PAGE_KEY_WORKBENCH,
+                        WORKBENCH_VIEW_BASIC,
+                        ("workbench.basic.left", "workbench.basic.right", "workbench.basic.main"),
+                    ),
+                    (
+                        PAGE_KEY_DATA_TEMPLATE,
+                        None,
+                        ("data_template.excel", "data_template.template", "data_template.main"),
+                    ),
+                    (
+                        PAGE_KEY_LOCAL_STORE,
+                        None,
+                        ("local_store.friend", "local_store.dataset_shell", "local_store.main"),
+                    ),
+                    (
+                        PAGE_KEY_WORKBENCH,
+                        WORKBENCH_VIEW_SEND,
+                        ("workbench.send.left", "workbench.send.main"),
+                    ),
+                    (
+                        PAGE_KEY_TASK_CENTER,
+                        None,
+                        ("task_center.schedule", "task_center.main"),
+                    ),
+                ):
+                    self.open_page(window, page_key, workbench_view)
+                    for splitter_key in splitter_keys:
+                        with self.subTest(splitter_key=splitter_key):
+                            self.assertEqual(window._registered_splitters[splitter_key].sizes(), EXPECTED_STARTUP_SPLITTER_SIZES[splitter_key])
+            finally:
+                window.close()
+
+    def test_close_without_opening_other_pages_keeps_screenshot_splitter_defaults(self) -> None:
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp_dir:
+            tmp = Path(tmp_dir)
+            config_path = tmp / "excel-sender-test-config.json"
+            window = self.create_window(tmp)
+            try:
+                window.show()
+                self.app.processEvents()
+            finally:
+                window.close()
+
+            config_data = json.loads(config_path.read_text(encoding="utf-8"))
+            saved_splitters = config_data["ui"]["splitter_sizes"]
+            for splitter_key in (
+                "data_template.excel",
+                "data_template.template",
+                "data_template.main",
+                "local_store.friend",
+                "local_store.group",
+                "local_store.dataset_shell",
+                "local_store.main",
+                "workbench.send.left",
+                "workbench.send.main",
+                "task_center.schedule",
+                "task_center.main",
+            ):
+                with self.subTest(splitter_key=splitter_key):
+                    self.assertEqual(saved_splitters[splitter_key], SPLITTER_STARTUP_DEFAULT_SIZES[splitter_key])
+
+    def test_legacy_splitter_defaults_migrate_to_screenshot_layout(self) -> None:
         with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp_dir:
             tmp = Path(tmp_dir)
             config_path = tmp / "excel-sender-test-config.json"
@@ -230,9 +374,8 @@ class ExcelSenderGuiRuntimeTests(unittest.TestCase):
                 json.dumps(
                     {
                         "ui": {
-                            "splitter_sizes": {
-                                "workbench.basic.left": [370, 739],
-                            }
+                            "splitter_layout_version": 2,
+                            "splitter_sizes": LEGACY_STARTUP_SPLITTER_SIZES,
                         }
                     },
                     ensure_ascii=False,
@@ -242,14 +385,81 @@ class ExcelSenderGuiRuntimeTests(unittest.TestCase):
             window = self.create_window(tmp)
             try:
                 window.show()
-                window.resize(1380, 920)
                 self.app.processEvents()
-                self.assertLess(window.basic_import_group.height(), 300)
+                migrated_config = json.loads(config_path.read_text(encoding="utf-8"))
+                self.assertEqual(migrated_config["ui"]["splitter_layout_version"], CURRENT_SPLITTER_LAYOUT_VERSION)
+                for splitter_key, expected_sizes in SPLITTER_STARTUP_DEFAULT_SIZES.items():
+                    with self.subTest(splitter_key=splitter_key):
+                        self.assertEqual(migrated_config["ui"]["splitter_sizes"][splitter_key], expected_sizes)
+
+                for page_key, workbench_view, splitter_keys in (
+                    (
+                        PAGE_KEY_WORKBENCH,
+                        WORKBENCH_VIEW_BASIC,
+                        ("workbench.basic.left", "workbench.basic.right", "workbench.basic.main"),
+                    ),
+                    (
+                        PAGE_KEY_DATA_TEMPLATE,
+                        None,
+                        ("data_template.excel", "data_template.template", "data_template.main"),
+                    ),
+                    (
+                        PAGE_KEY_LOCAL_STORE,
+                        None,
+                        ("local_store.friend", "local_store.dataset_shell", "local_store.main"),
+                    ),
+                    (
+                        PAGE_KEY_WORKBENCH,
+                        WORKBENCH_VIEW_SEND,
+                        ("workbench.send.left", "workbench.send.main"),
+                    ),
+                    (
+                        PAGE_KEY_TASK_CENTER,
+                        None,
+                        ("task_center.schedule", "task_center.main"),
+                    ),
+                ):
+                    self.open_page(window, page_key, workbench_view)
+                    for splitter_key in splitter_keys:
+                        with self.subTest(splitter_key=splitter_key):
+                            self.assertEqual(window._registered_splitters[splitter_key].sizes(), EXPECTED_STARTUP_SPLITTER_SIZES[splitter_key])
             finally:
                 window.close()
 
-            migrated_config = json.loads(config_path.read_text(encoding="utf-8"))
-            self.assertEqual(migrated_config["ui"]["splitter_layout_version"], 2)
+    def test_user_saved_splitter_sizes_survive_layout_upgrade(self) -> None:
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp_dir:
+            tmp = Path(tmp_dir)
+            config_path = tmp / "excel-sender-test-config.json"
+            custom_sizes = {
+                "workbench.basic.right": [410, 330, 267],
+                "data_template.main": [730, 672],
+                "workbench.send.main": [810, 592],
+                "task_center.main": [960, 442],
+            }
+            config_path.write_text(
+                json.dumps(
+                    {
+                        "ui": {
+                            "splitter_layout_version": 2,
+                            "splitter_sizes": custom_sizes,
+                        }
+                    },
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+
+            window = self.create_window(tmp)
+            try:
+                window.show()
+                self.app.processEvents()
+                upgraded_config = json.loads(config_path.read_text(encoding="utf-8"))
+                self.assertEqual(upgraded_config["ui"]["splitter_layout_version"], CURRENT_SPLITTER_LAYOUT_VERSION)
+                for splitter_key, expected_sizes in custom_sizes.items():
+                    with self.subTest(splitter_key=splitter_key):
+                        self.assertEqual(upgraded_config["ui"]["splitter_sizes"][splitter_key], expected_sizes)
+            finally:
+                window.close()
 
     def test_local_store_header_removes_redundant_summary_labels(self) -> None:
         with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp_dir:
@@ -260,8 +470,30 @@ class ExcelSenderGuiRuntimeTests(unittest.TestCase):
                 self.app.processEvents()
                 self.assertFalse(hasattr(window, "local_store_summary_label"))
                 self.assertFalse(hasattr(window, "local_filter_scope_label"))
+                self.assertFalse(hasattr(window, "use_local_store_button"))
                 local_store_shell_sizes = window._registered_splitters["local_store.dataset_shell"].sizes()
                 self.assertEqual(len(local_store_shell_sizes), 2)
+            finally:
+                window.close()
+
+    def test_local_store_filter_panel_uses_single_primary_action_and_collapsed_examples(self) -> None:
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp_dir:
+            tmp = Path(tmp_dir)
+            window = self.create_window(tmp)
+            try:
+                window.show()
+                self.app.processEvents()
+                self.assertEqual(window.refresh_local_store_button.property("role"), "secondary")
+                self.assertEqual(window.reset_filter_button.property("role"), "secondary")
+                self.assertEqual(window.apply_filter_button.property("role"), "primary")
+                self.assertTrue(window.filter_examples_body_label.isHidden())
+                collapsed_height = window.filter_examples_card.height()
+                self.assertLessEqual(collapsed_height, 64)
+                window.filter_examples_toggle_button.click()
+                self.app.processEvents()
+                self.assertFalse(window.filter_examples_body_label.isHidden())
+                self.assertGreater(window.filter_examples_card.height(), collapsed_height + 40)
+                self.assertIn("当前页签：好友库", window.filter_scope_summary_label.text())
             finally:
                 window.close()
 
@@ -354,6 +586,8 @@ class ExcelSenderGuiRuntimeTests(unittest.TestCase):
                 self.assertFalse(window.columns_empty_label.isVisible())
                 self.assertTrue(window.columns_view.isVisible())
                 self.assertIn("微信号", window.columns_view.toPlainText())
+                self.assertEqual(window.columns_view.sizePolicy().verticalPolicy(), QSizePolicy.Expanding)
+                self.assertGreater(window.columns_view.maximumHeight(), 1000)
 
                 window.common_attachments = [{"file_path": str(pdf), "file_type": "pdf"}]
                 window.refresh_common_attachment_table()
@@ -361,6 +595,10 @@ class ExcelSenderGuiRuntimeTests(unittest.TestCase):
                 self.assertFalse(window.common_attachment_empty_label.isVisible())
                 self.assertTrue(window.common_attachment_table.isVisible())
                 self.assertIn("已添加 1 个通用附件", window.common_attachment_status_label.text())
+                type_item = window.common_attachment_table.item(0, 0)
+                self.assertIsNotNone(type_item)
+                self.assertEqual(type_item.text(), "pdf")
+                self.assertEqual(type_item.foreground().color().name().lower(), "#111827")
             finally:
                 window.close()
 
@@ -761,6 +999,45 @@ class ExcelSenderGuiRuntimeTests(unittest.TestCase):
 
                 self.assertEqual(friend_table.columnWidth(0), 220)
                 self.assertEqual(friend_table.columnWidth(1), 260)
+            finally:
+                window.close()
+
+    def test_local_store_column_menu_controls_visible_columns_and_persists_after_refresh(self) -> None:
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp_dir:
+            tmp = Path(tmp_dir)
+            source_path = tmp / "contacts.csv"
+            source_path.write_text("显示名称,备注,微信号,类型\n张三,重要客户,wx_1,好友\n", encoding="utf-8")
+
+            window = self.create_window(tmp)
+            try:
+                window.local_store.import_contacts(
+                    source_path=source_path,
+                    records=[{"显示名称": "张三", "备注": "重要客户", "微信号": "wx_1", "类型": "好友"}],
+                    columns=["显示名称", "备注", "微信号", "类型"],
+                )
+                window.show()
+                window.refresh_local_store_page()
+                self.app.processEvents()
+
+                friend_table = window.local_store_views["friend"]["table"]
+                columns_button = window.local_store_views["friend"]["columns_button"]
+                columns_menu = window.local_store_views["friend"]["columns_menu"]
+                columns_summary_label = window.local_store_views["friend"]["columns_summary_label"]
+
+                self.assertTrue(columns_button.isEnabled())
+                window.populate_local_store_column_menu("friend")
+                checkable_actions = [action for action in columns_menu.actions() if action.isCheckable()]
+                note_action = next(action for action in checkable_actions if action.text() == "备注")
+                note_action.setChecked(False)
+                self.app.processEvents()
+
+                self.assertTrue(friend_table.isColumnHidden(1))
+                self.assertIn("已显示 3/4 列", columns_summary_label.text())
+
+                window.refresh_local_store_page()
+                self.app.processEvents()
+
+                self.assertTrue(friend_table.isColumnHidden(1))
             finally:
                 window.close()
 
