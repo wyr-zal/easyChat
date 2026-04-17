@@ -590,10 +590,10 @@ class ExcelSenderGUI(QWidget):
         *,
         min_width: int = 0,
         min_height: int = 0,
-        compact: bool = False,
+        compact: bool = True,
     ) -> QPushButton:
         button.setProperty("role", role)
-        if min_width > 0:
+        if min_width > 0 and not compact:
             button.setMinimumWidth(min_width)
         if min_height > 0:
             button.setMinimumHeight(min_height)
@@ -601,6 +601,7 @@ class ExcelSenderGUI(QWidget):
         button.style().unpolish(button)
         button.style().polish(button)
         if compact:
+            button.setMinimumWidth(0)
             button.adjustSize()
         button.update()
         return button
@@ -2257,19 +2258,16 @@ class ExcelSenderGUI(QWidget):
         self.excel_path_input.textChanged.connect(self.on_excel_path_changed)
         path_layout.addWidget(self.excel_path_input)
 
-        choose_button = QPushButton("选择文件")
-        choose_button.setMinimumWidth(120)
-        choose_button.clicked.connect(self.select_excel_file)
-        path_layout.addWidget(choose_button)
+        self.excel_choose_button = QPushButton("选择文件")
+        self.excel_choose_button.clicked.connect(self.select_excel_file)
+        path_layout.addWidget(self.excel_choose_button)
 
         load_button = QPushButton("读取数据")
-        load_button.setMinimumWidth(120)
         load_button.clicked.connect(self.load_excel_data)
         path_layout.addWidget(load_button)
         self.load_excel_button = load_button
 
         import_button = QPushButton("导入到本地库")
-        import_button.setMinimumWidth(140)
         import_button.clicked.connect(self.import_excel_to_local_store)
         path_layout.addWidget(import_button)
         self.import_local_button = import_button
@@ -5246,7 +5244,6 @@ class ExcelSenderGUI(QWidget):
             attachment_button.clicked.connect(lambda _, index=row_index: self.edit_row_attachments(index))
             attachment_button.setEnabled(allow_edit)
             attachment_button.setToolTip(self.get_row_attachment_tooltip(row))
-            attachment_button.setMinimumWidth(88)
             operation_layout.addWidget(attachment_button)
 
             delete_button = QPushButton("删除", operation_widget)

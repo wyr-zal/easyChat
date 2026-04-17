@@ -547,19 +547,36 @@ class ExcelSenderGuiRuntimeTests(unittest.TestCase):
             finally:
                 window.close()
 
-    def test_basic_attachment_inline_buttons_use_compact_width(self) -> None:
+    def test_action_buttons_use_compact_width_globally(self) -> None:
         with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp_dir:
             tmp = Path(tmp_dir)
             window = self.create_window(tmp)
             try:
                 buttons = [
+                    window.basic_load_button,
+                    window.basic_match_button,
+                    window.basic_insert_variable_button,
                     window.basic_select_attachment_button,
                     window.basic_add_attachment_button,
                     window.basic_remove_attachment_button,
                     window.basic_clear_attachment_button,
+                    window.basic_start_button,
+                    window.basic_stop_button,
+                    window.import_json_button,
+                    window.refresh_schedule_button,
+                    window.preview_schedule_button,
+                    window.preview_button,
+                    window.start_button,
+                    window.stop_button,
+                    window.continue_button,
+                    window.export_json_button,
+                    window.debug_mode_button,
                 ]
                 for button in buttons:
                     self.assertEqual(button.sizePolicy().horizontalPolicy(), QSizePolicy.Fixed)
+                self.assertEqual(window.excel_choose_button.minimumWidth(), 0)
+                self.assertEqual(window.load_excel_button.minimumWidth(), 0)
+                self.assertEqual(window.import_local_button.minimumWidth(), 0)
             finally:
                 window.close()
 
