@@ -12,6 +12,7 @@ from PyQt5.QtWidgets import QApplication
 from PyQt5.QtWidgets import QHeaderView
 from PyQt5.QtWidgets import QMessageBox
 from PyQt5.QtWidgets import QPushButton
+from PyQt5.QtWidgets import QSizePolicy
 from PyQt5.QtWidgets import QSplitter
 
 from excel_sender_gui import ExcelSenderGUI
@@ -144,6 +145,21 @@ class ExcelSenderGuiRuntimeTests(unittest.TestCase):
             finally:
                 window.close()
 
+    def test_data_template_page_uses_clear_card_sections(self) -> None:
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp_dir:
+            tmp = Path(tmp_dir)
+            window = self.create_window(tmp)
+            try:
+                self.assertEqual(window.data_template_source_section.property("themeStyleRole"), "panel-card")
+                self.assertEqual(window.data_template_target_section.property("themeStyleRole"), "panel-card")
+                self.assertEqual(window.data_template_columns_section.property("themeStyleRole"), "panel-card")
+                self.assertEqual(window.data_template_template_section.property("themeStyleRole"), "panel-card")
+                self.assertEqual(window.data_template_placeholder_section.property("themeStyleRole"), "panel-card")
+                self.assertEqual(window.data_template_attachment_section.property("themeStyleRole"), "panel-card")
+                self.assertEqual(window._registered_splitters["data_template.template"].count(), 3)
+            finally:
+                window.close()
+
     def test_workbench_uses_nested_splitters_for_horizontal_and_vertical_resize(self) -> None:
         with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp_dir:
             tmp = Path(tmp_dir)
@@ -158,6 +174,65 @@ class ExcelSenderGuiRuntimeTests(unittest.TestCase):
                 self.assertEqual(window.task_center_splitter.orientation(), Qt.Horizontal)
                 self.assertEqual(window._registered_splitters["task_center.schedule"].orientation(), Qt.Vertical)
                 self.assertEqual(window._registered_splitters["local_store.dataset_shell"].orientation(), Qt.Vertical)
+            finally:
+                window.close()
+
+    def test_basic_import_group_keeps_compact_default_height(self) -> None:
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp_dir:
+            tmp = Path(tmp_dir)
+            window = self.create_window(tmp)
+            try:
+                window.show()
+                window.resize(1380, 920)
+                self.app.processEvents()
+                self.assertLess(window.basic_import_group.height(), window.basic_message_group.height())
+                self.assertLessEqual(
+                    window.basic_import_group.height(),
+                    window.basic_import_group.sizeHint().height() + 80,
+                )
+            finally:
+                window.close()
+
+    def test_old_basic_left_splitter_sizes_migrate_to_compact_ratio(self) -> None:
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp_dir:
+            tmp = Path(tmp_dir)
+            config_path = tmp / "excel-sender-test-config.json"
+            config_path.write_text(
+                json.dumps(
+                    {
+                        "ui": {
+                            "splitter_sizes": {
+                                "workbench.basic.left": [370, 739],
+                            }
+                        }
+                    },
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+            window = self.create_window(tmp)
+            try:
+                window.show()
+                window.resize(1380, 920)
+                self.app.processEvents()
+                self.assertLess(window.basic_import_group.height(), 300)
+            finally:
+                window.close()
+
+            migrated_config = json.loads(config_path.read_text(encoding="utf-8"))
+            self.assertEqual(migrated_config["ui"]["splitter_layout_version"], 2)
+
+    def test_local_store_header_removes_redundant_summary_labels(self) -> None:
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp_dir:
+            tmp = Path(tmp_dir)
+            window = self.create_window(tmp)
+            try:
+                window.show()
+                self.app.processEvents()
+                self.assertFalse(hasattr(window, "local_store_summary_label"))
+                self.assertFalse(hasattr(window, "local_filter_scope_label"))
+                local_store_shell_sizes = window._registered_splitters["local_store.dataset_shell"].sizes()
+                self.assertEqual(len(local_store_shell_sizes), 2)
             finally:
                 window.close()
 
@@ -441,6 +516,154 @@ class ExcelSenderGuiRuntimeTests(unittest.TestCase):
                 self.assertGreaterEqual(window.basic_selected_table.columnWidth(0), 150)
                 self.assertGreaterEqual(window.basic_selected_table.columnWidth(1), 300)
                 self.assertGreaterEqual(window.basic_selected_table.columnWidth(2), 100)
+            finally:
+                window.close()
+
+    def test_preview_and_attachment_tables_columns_are_all_resizable(self) -> None:
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp_dir:
+            tmp = Path(tmp_dir)
+            window = self.create_window(tmp)
+            try:
+                preview_modes = [
+                    window.preview_table.horizontalHeader().sectionResizeMode(index)
+                    for index in range(window.preview_table.columnCount())
+                ]
+                self.assertEqual(preview_modes, [QHeaderView.Interactive] * window.preview_table.columnCount())
+
+                attachment_modes = [
+                    window.common_attachment_table.horizontalHeader().sectionResizeMode(index)
+                    for index in range(window.common_attachment_table.columnCount())
+                ]
+                self.assertEqual(attachment_modes, [QHeaderView.Interactive] * window.common_attachment_table.columnCount())
+
+                basic_attachment_modes = [
+                    window.basic_attachment_table.horizontalHeader().sectionResizeMode(index)
+                    for index in range(window.basic_attachment_table.columnCount())
+                ]
+                self.assertEqual(
+                    basic_attachment_modes,
+                    [QHeaderView.Interactive] * window.basic_attachment_table.columnCount(),
+                )
+            finally:
+                window.close()
+
+    def test_basic_attachment_inline_buttons_use_compact_width(self) -> None:
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp_dir:
+            tmp = Path(tmp_dir)
+            window = self.create_window(tmp)
+            try:
+                buttons = [
+                    window.basic_select_attachment_button,
+                    window.basic_add_attachment_button,
+                    window.basic_remove_attachment_button,
+                    window.basic_clear_attachment_button,
+                ]
+                for button in buttons:
+                    self.assertEqual(button.sizePolicy().horizontalPolicy(), QSizePolicy.Fixed)
+            finally:
+                window.close()
+
+    def test_schedule_table_columns_are_all_resizable(self) -> None:
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp_dir:
+            tmp = Path(tmp_dir)
+            window = self.create_window(tmp)
+            try:
+                header = window.schedule_table.horizontalHeader()
+                modes = [header.sectionResizeMode(index) for index in range(window.schedule_table.columnCount())]
+                self.assertEqual(modes, [QHeaderView.Interactive] * window.schedule_table.columnCount())
+                self.assertGreaterEqual(window.schedule_table.columnWidth(0), 80)
+                self.assertGreaterEqual(window.schedule_table.columnWidth(1), 160)
+                self.assertGreaterEqual(window.schedule_table.columnWidth(6), 320)
+            finally:
+                window.close()
+
+    def test_schedule_table_preserves_manual_column_width_after_refresh(self) -> None:
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp_dir:
+            tmp = Path(tmp_dir)
+            json_path = tmp / "task.json"
+            json_path.write_text("{}", encoding="utf-8")
+
+            window = self.create_window(tmp)
+            store = window.local_store
+            task_id = store.create_task_snapshot(
+                rows=[{"__target_value": "A", "target_type": "person"}],
+                filter_fields="",
+                filter_pattern="",
+                target_column="target_value",
+                template_text="hello",
+                source_batch_id=None,
+                source_mode=SOURCE_MODE_JSON,
+                task_kind="json",
+                source_json_path=str(json_path),
+                source_json_name=json_path.name,
+                json_start_time="2000-01-01 00:00:00",
+            )
+            store.create_scheduled_job(
+                task_id=task_id,
+                scheduled_at="2000-01-01 00:00:00",
+                interval_seconds=1,
+                random_delay_min=0,
+                random_delay_max=0,
+                operator_name="tester",
+                report_to="tester",
+                source_mode=SOURCE_MODE_JSON,
+                dataset_type="all",
+                template_preview="hello",
+                total_count=1,
+                task_kind="json",
+                source_json_path=str(json_path),
+                source_json_name=json_path.name,
+            )
+            try:
+                window.show()
+                window.refresh_scheduled_jobs()
+                self.app.processEvents()
+
+                window.schedule_table.setColumnWidth(0, 130)
+                window.schedule_table.setColumnWidth(1, 260)
+                window.schedule_table.setColumnWidth(6, 500)
+                self.app.processEvents()
+
+                window.refresh_scheduled_jobs()
+                self.app.processEvents()
+
+                self.assertEqual(window.schedule_table.columnWidth(0), 130)
+                self.assertEqual(window.schedule_table.columnWidth(1), 260)
+                self.assertEqual(window.schedule_table.columnWidth(6), 500)
+            finally:
+                window.close()
+
+    def test_local_store_table_columns_are_resizable_and_preserve_manual_width(self) -> None:
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp_dir:
+            tmp = Path(tmp_dir)
+            source_path = tmp / "contacts.csv"
+            source_path.write_text("显示名称,备注,微信号,类型\n张三,重要客户,wx_1,好友\n", encoding="utf-8")
+
+            window = self.create_window(tmp)
+            try:
+                window.local_store.import_contacts(
+                    source_path=source_path,
+                    records=[{"显示名称": "张三", "备注": "重要客户", "微信号": "wx_1", "类型": "好友"}],
+                    columns=["显示名称", "备注", "微信号", "类型"],
+                )
+                window.show()
+                window.refresh_local_store_page()
+                self.app.processEvents()
+
+                friend_table = window.local_store_views["friend"]["table"]
+                self.assertIsNotNone(friend_table)
+                modes = [friend_table.horizontalHeader().sectionResizeMode(index) for index in range(friend_table.columnCount())]
+                self.assertEqual(modes, [QHeaderView.Interactive] * friend_table.columnCount())
+
+                friend_table.setColumnWidth(0, 220)
+                friend_table.setColumnWidth(1, 260)
+                self.app.processEvents()
+
+                window.refresh_local_store_page()
+                self.app.processEvents()
+
+                self.assertEqual(friend_table.columnWidth(0), 220)
+                self.assertEqual(friend_table.columnWidth(1), 260)
             finally:
                 window.close()
 

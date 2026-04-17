@@ -113,6 +113,7 @@ PAGE_KEY_LOCAL_STORE = "local_store"
 PAGE_KEY_TASK_CENTER = "task_center"
 WORKBENCH_VIEW_BASIC = "basic"
 WORKBENCH_VIEW_SEND = "send_prepare"
+CURRENT_SPLITTER_LAYOUT_VERSION = 2
 BASIC_SEND_STATUS_TEXT = {
     "": "待发送",
     "pending": "待发送",
@@ -319,7 +320,8 @@ class ExcelSenderGUI(QWidget):
         self.theme_timer.start()
 
     def load_config(self) -> dict:
-        if os.path.exists(self.config_path):
+        config_exists = os.path.exists(self.config_path)
+        if config_exists:
             with open(self.config_path, "r", encoding="utf-8") as file:
                 config = json.load(file)
         else:
@@ -444,6 +446,9 @@ class ExcelSenderGUI(QWidget):
             changed = True
         if "splitter_sizes" not in ui_config or not isinstance(ui_config.get("splitter_sizes"), dict):
             ui_config["splitter_sizes"] = {}
+            changed = True
+        if "splitter_layout_version" not in ui_config:
+            ui_config["splitter_layout_version"] = 1 if config_exists else CURRENT_SPLITTER_LAYOUT_VERSION
             changed = True
 
         if changed:
@@ -578,15 +583,25 @@ class ExcelSenderGUI(QWidget):
         self.apply_semantic_widget_style(card)
         return card
 
-    def set_button_role(self, button: QPushButton, role: str, *, min_width: int = 0, min_height: int = 0) -> QPushButton:
+    def set_button_role(
+        self,
+        button: QPushButton,
+        role: str,
+        *,
+        min_width: int = 0,
+        min_height: int = 0,
+        compact: bool = False,
+    ) -> QPushButton:
         button.setProperty("role", role)
         if min_width > 0:
             button.setMinimumWidth(min_width)
         if min_height > 0:
             button.setMinimumHeight(min_height)
-        button.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        button.setSizePolicy(QSizePolicy.Fixed if compact else QSizePolicy.Expanding, QSizePolicy.Fixed)
         button.style().unpolish(button)
         button.style().polish(button)
+        if compact:
+            button.adjustSize()
         button.update()
         return button
 
@@ -696,6 +711,8 @@ class ExcelSenderGUI(QWidget):
     def restore_registered_splitter_states(self) -> None:
         ui_config = self.config.setdefault("ui", {})
         raw_states = ui_config.get("splitter_sizes") if isinstance(ui_config.get("splitter_sizes"), dict) else {}
+        layout_version = int(ui_config.get("splitter_layout_version") or 0)
+        migrated = False
         for splitter_key, splitter in self._registered_splitters.items():
             target_sizes: list[int] | None = None
             raw_sizes = raw_states.get(splitter_key) if isinstance(raw_states, dict) else None
@@ -704,12 +721,23 @@ class ExcelSenderGUI(QWidget):
                     target_sizes = [max(0, int(size)) for size in raw_sizes]
                 except (TypeError, ValueError):
                     target_sizes = None
+            if splitter_key == "workbench.basic.left" and layout_version < CURRENT_SPLITTER_LAYOUT_VERSION:
+                default_sizes = self._splitter_default_sizes.get(splitter_key)
+                if default_sizes and len(default_sizes) == splitter.count():
+                    target_sizes = list(default_sizes)
+                    migrated = True
             if target_sizes is None:
                 default_sizes = self._splitter_default_sizes.get(splitter_key)
                 if default_sizes and len(default_sizes) == splitter.count():
                     target_sizes = list(default_sizes)
             if target_sizes:
                 splitter.setSizes(target_sizes)
+        if layout_version < CURRENT_SPLITTER_LAYOUT_VERSION:
+            ui_config["splitter_layout_version"] = CURRENT_SPLITTER_LAYOUT_VERSION
+            if migrated:
+                self.save_registered_splitter_states()
+            else:
+                self.save_config_if_ready()
 
     def resolve_semantic_tone(self, color: str | None) -> str:
         if not color:
@@ -1217,7 +1245,7 @@ class ExcelSenderGUI(QWidget):
         self.apply_basic_splitter_sizes(
             self.basic_left_splitter,
             [
-                ("import", getattr(self, "basic_import_group", None), 1),
+                ("import", getattr(self, "basic_import_group", None), 0),
                 ("message", getattr(self, "basic_message_group", None), 2),
             ],
         )
@@ -1363,6 +1391,11 @@ class ExcelSenderGUI(QWidget):
             table = getattr(self, table_name, None)
             if isinstance(table, QTableWidget):
                 self.apply_table_header_font(table)
+        if hasattr(self, "local_store_views"):
+            for view_refs in self.local_store_views.values():
+                table = view_refs.get("table")
+                if isinstance(table, QTableWidget):
+                    self.apply_table_header_font(table)
         if hasattr(self, "theme_status_label"):
             resolved_label = "深色" if self._resolved_theme == THEME_MODE_DARK else "浅色"
             mode_label = {
@@ -1508,9 +1541,9 @@ class ExcelSenderGUI(QWidget):
             Qt.Vertical,
             [self.basic_import_group, self.basic_message_group],
             parent=left_panel,
-            stretch_factors=[1, 2],
+            stretch_factors=[0, 1],
             splitter_key="workbench.basic.left",
-            default_sizes=[180, 360],
+            default_sizes=[220, 760],
         )
         left_layout.addWidget(self.basic_left_splitter, stretch=1)
 
@@ -1704,24 +1737,24 @@ class ExcelSenderGUI(QWidget):
         self.basic_attachment_input.setPlaceholderText("拖入附件或输入路径（多文件用分号分隔）")
         input_row.addWidget(self.basic_attachment_input)
 
-        select_button = QPushButton("选择附件")
-        select_button.clicked.connect(self.select_basic_attachments)
-        self.set_button_role(select_button, "secondary", min_width=120)
-        input_row.addWidget(select_button)
+        self.basic_select_attachment_button = QPushButton("选择附件")
+        self.basic_select_attachment_button.clicked.connect(self.select_basic_attachments)
+        self.set_button_role(self.basic_select_attachment_button, "secondary", compact=True)
+        input_row.addWidget(self.basic_select_attachment_button)
 
-        add_button = QPushButton("添加附件")
-        add_button.clicked.connect(self.import_basic_attachments_from_input)
-        self.set_button_role(add_button, "secondary", min_width=120)
-        input_row.addWidget(add_button)
+        self.basic_add_attachment_button = QPushButton("添加附件")
+        self.basic_add_attachment_button.clicked.connect(self.import_basic_attachments_from_input)
+        self.set_button_role(self.basic_add_attachment_button, "secondary", compact=True)
+        input_row.addWidget(self.basic_add_attachment_button)
         layout.addLayout(input_row)
 
         action_row = QHBoxLayout()
         self.basic_remove_attachment_button = QPushButton("删除选中附件")
         self.basic_remove_attachment_button.clicked.connect(self.remove_selected_basic_attachments)
-        self.set_button_role(self.basic_remove_attachment_button, "secondary", min_width=140)
+        self.set_button_role(self.basic_remove_attachment_button, "secondary", compact=True)
         self.basic_clear_attachment_button = QPushButton("清空附件")
         self.basic_clear_attachment_button.clicked.connect(self.clear_basic_attachments)
-        self.set_button_role(self.basic_clear_attachment_button, "secondary", min_width=120)
+        self.set_button_role(self.basic_clear_attachment_button, "secondary", compact=True)
         action_row.addWidget(self.basic_remove_attachment_button)
         action_row.addWidget(self.basic_clear_attachment_button)
         action_row.addStretch(1)
@@ -2135,14 +2168,6 @@ class ExcelSenderGUI(QWidget):
         action_layout.addStretch(1)
         header_layout.addLayout(action_layout)
 
-        self.local_store_summary_label = QLabel("本地库暂无数据。")
-        self.style_helper_label(self.local_store_summary_label)
-        header_layout.addWidget(self.local_store_summary_label)
-
-        self.local_filter_scope_label = QLabel("当前筛选对象：好友库当前批次。")
-        self.style_helper_label(self.local_filter_scope_label, color="#555")
-        header_layout.addWidget(self.local_filter_scope_label)
-
         self.local_store_tabs = QTabWidget(self)
         self.local_store_views: dict[str, dict[str, object]] = {}
         for dataset_type in (DATASET_FRIEND, DATASET_GROUP):
@@ -2153,13 +2178,13 @@ class ExcelSenderGUI(QWidget):
         local_store_splitter = self.build_splitter(
             Qt.Vertical,
             [
-                self.configure_splitter_pane(header_panel, min_height=110, vertical_policy=QSizePolicy.Preferred),
+                self.configure_splitter_pane(header_panel, min_height=64, vertical_policy=QSizePolicy.Preferred),
                 self.configure_splitter_pane(self.local_store_tabs, min_height=260),
             ],
             parent=group,
             stretch_factors=[1, 4],
             splitter_key="local_store.dataset_shell",
-            default_sizes=[120, 460],
+            default_sizes=[72, 508],
         )
         layout.addWidget(local_store_splitter, stretch=1)
 
@@ -2301,18 +2326,21 @@ class ExcelSenderGUI(QWidget):
             hint="先选择 Excel 或 CSV，再决定是否同步导入本地库。",
             content=source_panel,
         )
+        self.data_template_source_section = source_section
         target_section = self.build_section_panel(
             parent=group,
             title="发送识别列",
             hint="可填写 `微信号`、`姓名`、`备注` 等列名，发送时会按这里的列去微信搜索。",
             content=send_target_card,
         )
+        self.data_template_target_section = target_section
         columns_section = self.build_section_panel(
             parent=group,
             title="检测到的列名",
             hint="这里显示 Excel 表头，便于复制识别列名或核对模板占位符。",
             content=columns_panel_content,
         )
+        self.data_template_columns_section = columns_section
         columns_section.setMinimumHeight(180)
 
         excel_splitter = self.build_splitter(
@@ -2347,9 +2375,14 @@ class ExcelSenderGUI(QWidget):
         template_panel_content = QWidget(group)
         template_panel_layout = QVBoxLayout(template_panel_content)
         template_panel_layout.setContentsMargins(0, 0, 0, 0)
-        template_panel_layout.setSpacing(8)
+        template_panel_layout.setSpacing(0)
         template_panel_layout.addWidget(self.template_input, stretch=1)
-        template_panel_layout.addWidget(self.placeholder_status_label)
+
+        placeholder_panel_content = QWidget(group)
+        placeholder_panel_layout = QVBoxLayout(placeholder_panel_content)
+        placeholder_panel_layout.setContentsMargins(0, 0, 0, 0)
+        placeholder_panel_layout.setSpacing(0)
+        placeholder_panel_layout.addWidget(self.placeholder_status_label)
 
         attachment_path_layout = QHBoxLayout()
         self.common_attachment_input = FileDropLineEdit(
@@ -2388,11 +2421,12 @@ class ExcelSenderGUI(QWidget):
         self.common_attachment_table.setSelectionBehavior(QAbstractItemView.SelectRows)
         self.common_attachment_table.setEditTriggers(QAbstractItemView.NoEditTriggers)
         self.common_attachment_table.setTextElideMode(Qt.ElideMiddle)
-        header = self.common_attachment_table.horizontalHeader()
-        header.setSectionResizeMode(0, QHeaderView.Fixed)
-        header.setMinimumSectionSize(60)
-        header.setMaximumSectionSize(80)
-        header.setSectionResizeMode(1, QHeaderView.Stretch)
+        self.configure_resizable_table_columns(
+            self.common_attachment_table,
+            initial_widths=[110, 520],
+            signature="common_attachment_table",
+            min_section_size=60,
+        )
         self.common_attachment_table.verticalHeader().setDefaultSectionSize(36)
         self.common_attachment_table.verticalHeader().setMinimumSectionSize(32)
         self.common_attachment_table.setMinimumHeight(150)
@@ -2414,23 +2448,34 @@ class ExcelSenderGUI(QWidget):
             hint="支持占位符语法 `{{列名}}`，例如：`您好 {{姓名}}`。",
             content=template_panel_content,
         )
+        self.data_template_template_section = template_section
+        placeholder_section = self.build_section_panel(
+            parent=group,
+            title="占位符反馈",
+            hint="这里会即时提示当前模板用了哪些变量，以及是否存在缺失字段风险。",
+            content=placeholder_panel_content,
+        )
+        self.data_template_placeholder_section = placeholder_section
+        placeholder_section.setMinimumHeight(120)
         attachment_section = self.build_section_panel(
             parent=group,
             title="通用附件（任意本地文件）",
             hint="为整轮发送统一附带附件；留空则本轮不会附带通用附件。",
             content=attachment_panel_content,
         )
+        self.data_template_attachment_section = attachment_section
 
         template_splitter = self.build_splitter(
             Qt.Vertical,
             [
-                self.configure_splitter_pane(template_section, min_height=260),
+                self.configure_splitter_pane(template_section, min_height=240),
+                self.configure_splitter_pane(placeholder_section, min_height=120, vertical_policy=QSizePolicy.Preferred),
                 self.configure_splitter_pane(attachment_section, min_height=220),
             ],
             parent=group,
-            stretch_factors=[3, 2],
+            stretch_factors=[3, 1, 2],
             splitter_key="data_template.template",
-            default_sizes=[360, 260],
+            default_sizes=[320, 150, 280],
         )
         layout.addWidget(template_splitter, stretch=1)
 
@@ -2556,16 +2601,13 @@ class ExcelSenderGUI(QWidget):
         self.preview_table.setSelectionBehavior(QTableWidget.SelectRows)
         self.preview_table.itemChanged.connect(self.on_preview_item_changed)
         self.preview_table.setTextElideMode(Qt.ElideMiddle)
-        header = self.preview_table.horizontalHeader()
         self.apply_table_header_font(self.preview_table)
-        header.setSectionResizeMode(0, QHeaderView.Interactive)
-        header.setMinimumSectionSize(80)
-        header.setSectionResizeMode(1, QHeaderView.Interactive)
-        header.setMinimumSectionSize(80)
-        header.setSectionResizeMode(2, QHeaderView.Stretch)
-        header.setSectionResizeMode(3, QHeaderView.Fixed)
-        header.setMinimumSectionSize(100)
-        header.setMaximumSectionSize(150)
+        self.configure_resizable_table_columns(
+            self.preview_table,
+            initial_widths=[180, 220, 520, 150],
+            signature="preview_table",
+            min_section_size=80,
+        )
         self.preview_table.verticalHeader().setDefaultSectionSize(36)
         self.preview_table.verticalHeader().setMinimumSectionSize(32)
         layout.addWidget(self.preview_table)
@@ -2725,8 +2767,6 @@ class ExcelSenderGUI(QWidget):
     def refresh_local_store_page(self) -> None:
         summaries = self.local_store.get_current_import_summaries()
         if not summaries:
-            self.set_label_tone(self.local_store_summary_label, "muted")
-            self.local_store_summary_label.setText("本地库暂无数据，请先导入 Excel/CSV。")
             for view_refs in self.local_store_views.values():
                 summary_label = view_refs["summary_label"]
                 columns_view = view_refs["columns_view"]
@@ -2742,13 +2782,6 @@ class ExcelSenderGUI(QWidget):
             self.update_local_filter_scope()
             return
 
-        self.set_label_tone(self.local_store_summary_label, "success")
-        self.local_store_summary_label.setText(
-            "；".join(
-                f"{summary.dataset_label}：{summary.source_name}（导入时间 {summary.imported_at}，共 {summary.row_count} 行）"
-                for summary in summaries.values()
-            )
-        )
         has_any_records = False
         for dataset_type in (DATASET_FRIEND, DATASET_GROUP):
             summary = summaries.get(dataset_type)
@@ -2787,7 +2820,13 @@ class ExcelSenderGUI(QWidget):
                         QTableWidgetItem(str(row.get(column_name, ""))),
                     )
 
-            table.resizeColumnsToContents()
+            self.configure_resizable_table_columns(
+                table,
+                signature=f"local_store:{dataset_type}:{'|'.join(columns)}",
+                min_section_size=72,
+                auto_fit_on_signature_change=True,
+                max_auto_width=340,
+            )
             table.resizeRowsToContents()
 
         self.use_local_store_button.setEnabled(has_any_records)
@@ -4533,10 +4572,6 @@ class ExcelSenderGUI(QWidget):
         table.verticalHeader().setVisible(False)
         table.setSelectionBehavior(QAbstractItemView.SelectRows)
         table.setEditTriggers(QAbstractItemView.NoEditTriggers)
-        table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeToContents)
-        table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeToContents)
-        table.horizontalHeader().setSectionResizeMode(2, QHeaderView.Stretch)
-        table.horizontalHeader().setSectionResizeMode(3, QHeaderView.ResizeToContents)
         for row_index, row in enumerate(records):
             table.setItem(row_index, 0, QTableWidgetItem(self.get_send_target_value(row)))
             table.setItem(row_index, 1, QTableWidgetItem(self.get_display_name(row)))
@@ -4548,6 +4583,12 @@ class ExcelSenderGUI(QWidget):
             custom_attachments = self.extract_row_custom_attachments(row)
             attachments = custom_attachments if custom_attachments else [dict(item) for item in preview_common_attachments]
             table.setItem(row_index, 3, QTableWidgetItem(self.build_attachment_summary_text(attachments, max_items=4)))
+        self.configure_resizable_table_columns(
+            table,
+            initial_widths=[180, 180, 420, 260],
+            signature="scheduled_job_preview_dialog",
+            min_section_size=80,
+        )
         table.resizeRowsToContents()
         layout.addWidget(table, stretch=1)
         button_box = QDialogButtonBox(QDialogButtonBox.Close, dialog)
