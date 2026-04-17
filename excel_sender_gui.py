@@ -567,10 +567,10 @@ class ExcelSenderGUI(QWidget):
         self.apply_semantic_widget_style(label)
         return label
 
-    def style_empty_state_label(self, label: QLabel, *, tone: str = "muted") -> QLabel:
+    def style_empty_state_label(self, label: QLabel, *, tone: str = "muted", role: str = "empty-state") -> QLabel:
         label.setWordWrap(True)
         label.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
-        label.setProperty("themeStyleRole", "empty-state")
+        label.setProperty("themeStyleRole", role)
         label.setProperty("themeTone", tone)
         self.apply_semantic_widget_style(label)
         return label
@@ -640,14 +640,26 @@ class ExcelSenderGUI(QWidget):
         content: QWidget | None = None,
         spacing: int = 8,
     ) -> QWidget:
-        panel = self.build_panel_card(parent)
+        panel = QFrame(parent)
+        panel.setFrameShape(QFrame.NoFrame)
+        panel.setProperty("themeStyleRole", "section-panel")
+        panel.setProperty("themeTone", "default")
+        self.apply_semantic_widget_style(panel)
+
         layout = QVBoxLayout(panel)
-        layout.setContentsMargins(14, 14, 14, 14)
+        layout.setContentsMargins(12, 12, 12, 12)
         layout.setSpacing(spacing)
 
         title_label = QLabel(title, panel)
         self.style_section_title_label(title_label)
         layout.addWidget(title_label)
+
+        divider = QFrame(panel)
+        divider.setFrameShape(QFrame.HLine)
+        divider.setFrameShadow(QFrame.Sunken)
+        divider.setProperty("themeStyleRole", "separator")
+        self.apply_semantic_widget_style(divider)
+        layout.addWidget(divider)
 
         if hint:
             hint_label = QLabel(hint, panel)
@@ -786,6 +798,13 @@ class ExcelSenderGUI(QWidget):
                 "border-radius:12px;"
             )
             return
+        if role == "section-panel":
+            widget.setStyleSheet(
+                f"background:{tokens['panel_bg']};"
+                f"border:1px solid {tokens['border_strong']};"
+                "border-radius:12px;"
+            )
+            return
         if role == "empty-state":
             color = {
                 "muted": tokens["text_muted"],
@@ -805,6 +824,28 @@ class ExcelSenderGUI(QWidget):
                 f"border:1px dashed {border_color};"
                 "border-radius:10px;"
                 "padding:18px 16px;"
+            )
+            return
+        if role == "section-empty":
+            color = {
+                "muted": tokens["text_muted"],
+                "warning": tokens["warning"],
+                "danger": tokens["danger"],
+                "success": tokens["success"],
+                "default": tokens["text_secondary"],
+            }.get(tone, tokens["text_secondary"])
+            border_color = {
+                "warning": tokens["warning"],
+                "danger": tokens["danger"],
+                "success": tokens["success"],
+                "default": tokens["border"],
+            }.get(tone, tokens["border"])
+            widget.setStyleSheet(
+                f"color:{color};"
+                "background: transparent;"
+                f"border:1px dashed {border_color};"
+                "border-radius:10px;"
+                "padding:12px 14px;"
             )
             return
         if role == "separator":
@@ -2083,6 +2124,7 @@ class ExcelSenderGUI(QWidget):
         task_action_layout = QGridLayout()
         task_action_layout.setHorizontalSpacing(10)
         task_action_layout.setVerticalSpacing(8)
+        self.task_action_layout = task_action_layout
         self.refresh_schedule_button = QPushButton("刷新任务列表")
         self.refresh_schedule_button.clicked.connect(self.refresh_scheduled_jobs)
         self.set_button_role(self.refresh_schedule_button, "secondary", min_width=88)
@@ -2108,12 +2150,13 @@ class ExcelSenderGUI(QWidget):
         self.cancel_schedule_button.setEnabled(False)
         task_action_layout.addWidget(self.refresh_schedule_button, 0, 0)
         task_action_layout.addWidget(self.preview_schedule_button, 0, 1)
-        task_action_layout.addWidget(self.enable_schedule_button, 1, 0)
-        task_action_layout.addWidget(self.disable_schedule_button, 1, 1)
-        task_action_layout.addWidget(self.delete_schedule_button, 2, 0)
-        task_action_layout.addWidget(self.cancel_schedule_button, 2, 1)
+        task_action_layout.addWidget(self.enable_schedule_button, 0, 2)
+        task_action_layout.addWidget(self.disable_schedule_button, 1, 0)
+        task_action_layout.addWidget(self.delete_schedule_button, 1, 1)
+        task_action_layout.addWidget(self.cancel_schedule_button, 1, 2)
         task_action_layout.setColumnStretch(0, 1)
         task_action_layout.setColumnStretch(1, 1)
+        task_action_layout.setColumnStretch(2, 1)
         action_panel_layout.addLayout(task_action_layout)
 
         self.schedule_table = QTableWidget(0, 7, self)
@@ -2137,13 +2180,13 @@ class ExcelSenderGUI(QWidget):
         schedule_splitter = self.build_splitter(
             Qt.Vertical,
             [
-                self.configure_splitter_pane(action_panel, min_height=128, vertical_policy=QSizePolicy.Preferred),
+                self.configure_splitter_pane(action_panel, min_height=96, vertical_policy=QSizePolicy.Preferred),
                 self.configure_splitter_pane(self.schedule_table, min_height=220),
             ],
             parent=group,
             stretch_factors=[1, 4],
             splitter_key="task_center.schedule",
-            default_sizes=[150, 420],
+            default_sizes=[118, 452],
         )
         layout.addWidget(schedule_splitter, stretch=1)
 
@@ -2242,12 +2285,12 @@ class ExcelSenderGUI(QWidget):
     def build_excel_group(self) -> QGroupBox:
         group = QGroupBox("Excel 数据")
         layout = QVBoxLayout(group)
-        layout.setSpacing(12)
+        layout.setSpacing(10)
 
         source_panel = QWidget(group)
         source_layout = QVBoxLayout(source_panel)
         source_layout.setContentsMargins(0, 0, 0, 0)
-        source_layout.setSpacing(10)
+        source_layout.setSpacing(8)
 
         path_layout = QHBoxLayout()
         self.excel_path_input = FileDropLineEdit(
@@ -2274,68 +2317,59 @@ class ExcelSenderGUI(QWidget):
 
         source_layout.addLayout(path_layout)
 
-        summary_card = self.build_panel_card(group)
-        summary_layout = QVBoxLayout(summary_card)
-        summary_layout.setContentsMargins(12, 12, 12, 12)
-        summary_layout.setSpacing(8)
-
         self.data_info_label = QLabel("尚未读取 Excel 数据。")
-        self.style_helper_label(self.data_info_label)
-        summary_layout.addWidget(self.data_info_label)
+        self.style_helper_label(self.data_info_label, color="#555")
+        source_layout.addWidget(self.data_info_label)
 
         self.local_db_status_label = QLabel("本地库尚未导入数据。")
         self.style_helper_label(self.local_db_status_label, color="#555")
-        summary_layout.addWidget(self.local_db_status_label)
-        source_layout.addWidget(summary_card)
+        source_layout.addWidget(self.local_db_status_label)
 
-        send_target_card = self.build_panel_card(group)
-        send_target_layout = QVBoxLayout(send_target_card)
-        send_target_layout.setContentsMargins(12, 12, 12, 12)
-        send_target_layout.setSpacing(8)
+        target_panel = QWidget(group)
+        target_layout = QVBoxLayout(target_panel)
+        target_layout.setContentsMargins(0, 0, 0, 0)
+        target_layout.setSpacing(8)
 
         self.send_target_column_input = QLineEdit(self)
-        self.send_target_column_input.setPlaceholderText("默认：微信号，也可以填写姓名、备注等列名")
+        self.send_target_column_input.setPlaceholderText("微信号")
         self.send_target_column_input.textChanged.connect(self.on_send_target_column_changed)
-        send_target_layout.addWidget(self.send_target_column_input)
+        target_layout.addWidget(self.send_target_column_input)
 
-        self.send_target_status_label = QLabel("当前发送时会使用“微信号”列作为微信搜索关键词。")
+        self.send_target_status_label = QLabel("默认按“微信号”搜索。")
         self.style_helper_label(self.send_target_status_label, color="#555")
-        send_target_layout.addWidget(self.send_target_status_label)
+        target_layout.addWidget(self.send_target_status_label)
 
-        self.columns_empty_label = QLabel("读取 Excel 后，这里会显示当前文件的列名参考。")
-        self.style_empty_state_label(self.columns_empty_label)
+        self.columns_empty_label = QLabel("暂无列名。")
+        self.style_empty_state_label(self.columns_empty_label, role="section-empty")
 
         self.columns_view = QPlainTextEdit(self)
         self.columns_view.setReadOnly(True)
-        self.columns_view.setPlaceholderText("读取 Excel 后，这里会显示列名参考。")
+        self.columns_view.setPlaceholderText("")
         self.columns_view.setFixedHeight(64)
         self.update_columns_reference_presentation()
 
         columns_panel_content = QWidget(group)
         columns_panel_layout = QVBoxLayout(columns_panel_content)
         columns_panel_layout.setContentsMargins(0, 0, 0, 0)
-        columns_panel_layout.setSpacing(8)
+        columns_panel_layout.setSpacing(6)
         columns_panel_layout.addWidget(self.columns_empty_label)
         columns_panel_layout.addWidget(self.columns_view)
 
         source_section = self.build_section_panel(
             parent=group,
-            title="文件与导入摘要",
-            hint="先选择 Excel 或 CSV，再决定是否同步导入本地库。",
+            title="文件与导入",
             content=source_panel,
         )
         self.data_template_source_section = source_section
         target_section = self.build_section_panel(
             parent=group,
             title="发送识别列",
-            hint="可填写 `微信号`、`姓名`、`备注` 等列名，发送时会按这里的列去微信搜索。",
-            content=send_target_card,
+            content=target_panel,
         )
         self.data_template_target_section = target_section
         columns_section = self.build_section_panel(
             parent=group,
             title="检测到的列名",
-            hint="这里显示 Excel 表头，便于复制识别列名或核对模板占位符。",
             content=columns_panel_content,
         )
         self.data_template_columns_section = columns_section
@@ -2360,14 +2394,14 @@ class ExcelSenderGUI(QWidget):
     def build_template_group(self) -> QGroupBox:
         group = QGroupBox("消息模板")
         layout = QVBoxLayout(group)
-        layout.setSpacing(12)
+        layout.setSpacing(10)
 
         self.template_input = QPlainTextEdit(self)
-        self.template_input.setPlaceholderText("请输入要批量发送的模板消息。")
+        self.template_input.setPlaceholderText("")
         self.template_input.textChanged.connect(self.on_template_changed)
         self.template_input.setMinimumHeight(220)
 
-        self.placeholder_status_label = QLabel("当前模板未使用占位符。")
+        self.placeholder_status_label = QLabel("未使用占位符。")
         self.style_helper_label(self.placeholder_status_label)
 
         template_panel_content = QWidget(group)
@@ -2387,7 +2421,7 @@ class ExcelSenderGUI(QWidget):
             allow_multiple=True,
             parent=self,
         )
-        self.common_attachment_input.setPlaceholderText("拖入附件或输入路径（多文件用分号分隔）")
+        self.common_attachment_input.setPlaceholderText("输入或拖入附件路径")
         attachment_path_layout.addWidget(self.common_attachment_input)
 
         choose_attachment_button = QPushButton("选择附件")
@@ -2407,11 +2441,11 @@ class ExcelSenderGUI(QWidget):
         attachment_action_layout.addWidget(self.clear_common_attachment_button)
         attachment_action_layout.addStretch(1)
 
-        self.common_attachment_status_label = QLabel("当前未添加通用附件。")
+        self.common_attachment_status_label = QLabel("未添加通用附件。")
         self.style_helper_label(self.common_attachment_status_label, color="#555")
 
-        self.common_attachment_empty_label = QLabel("当前还没有通用附件。可点击“选择附件”或输入路径后添加。")
-        self.style_empty_state_label(self.common_attachment_empty_label)
+        self.common_attachment_empty_label = QLabel("暂无通用附件。")
+        self.style_empty_state_label(self.common_attachment_empty_label, role="section-empty")
 
         self.common_attachment_table = QTableWidget(0, 2, self)
         self.common_attachment_table.setHorizontalHeaderLabels(["类型", "路径"])
@@ -2443,22 +2477,19 @@ class ExcelSenderGUI(QWidget):
         template_section = self.build_section_panel(
             parent=group,
             title="模板内容",
-            hint="支持占位符语法 `{{列名}}`，例如：`您好 {{姓名}}`。",
             content=template_panel_content,
         )
         self.data_template_template_section = template_section
         placeholder_section = self.build_section_panel(
             parent=group,
             title="占位符反馈",
-            hint="这里会即时提示当前模板用了哪些变量，以及是否存在缺失字段风险。",
             content=placeholder_panel_content,
         )
         self.data_template_placeholder_section = placeholder_section
         placeholder_section.setMinimumHeight(120)
         attachment_section = self.build_section_panel(
             parent=group,
-            title="通用附件（任意本地文件）",
-            hint="为整轮发送统一附带附件；留空则本轮不会附带通用附件。",
+            title="通用附件",
             content=attachment_panel_content,
         )
         self.data_template_attachment_section = attachment_section
@@ -2746,19 +2777,19 @@ class ExcelSenderGUI(QWidget):
         summaries = self.local_store.get_current_import_summaries()
         if not summaries:
             self.set_label_tone(self.local_db_status_label, "muted")
-            self.local_db_status_label.setText("本地库尚未导入数据，可前往“本地库数据”页查看详情。")
+            self.local_db_status_label.setText("本地库暂无批次。")
             return
 
         parts = [
             f"{summary.dataset_label}：{summary.source_name}（{summary.row_count} 行）"
             for summary in summaries.values()
         ]
-        text = "本地库当前批次：" + "；".join(parts) + "。"
+        text = "本地库批次：" + "；".join(parts)
         if self.is_local_db_mode():
             if self.current_task_id is not None:
-                text += f" 当前任务快照 {len(self.records)} 行。"
+                text += f"｜当前快照 {len(self.records)} 行"
             else:
-                text += " 当前正在使用好友+群聊本地库数据。"
+                text += "｜当前使用中"
         self.set_label_tone(self.local_db_status_label, "success")
         self.local_db_status_label.setText(text)
 
@@ -3901,12 +3932,10 @@ class ExcelSenderGUI(QWidget):
         attachment_count = len(self.common_attachments)
         if hasattr(self, "common_attachment_status_label"):
             if attachment_count == 0:
-                self.common_attachment_status_label.setText("当前未添加通用附件。可先选择文件或直接输入路径。")
+                self.common_attachment_status_label.setText("未添加通用附件。")
                 self.set_label_tone(self.common_attachment_status_label, "muted")
             else:
-                self.common_attachment_status_label.setText(
-                    f"已添加 {attachment_count} 个通用附件，发送时会统一附带。"
-                )
+                self.common_attachment_status_label.setText(f"已添加 {attachment_count} 个通用附件。")
                 self.set_label_tone(self.common_attachment_status_label, "success")
         if hasattr(self, "common_attachment_empty_label"):
             self.common_attachment_empty_label.setVisible(attachment_count == 0)
@@ -4974,13 +5003,13 @@ class ExcelSenderGUI(QWidget):
         valid_count = len([row for row in self.records if self.get_send_target_value(row)])
 
         if self.current_task_id is not None:
-            text = f"已载入 {source_total} 行本地数据，筛选后 {filtered_total} 行，当前任务快照 {current_total} 行，其中 {valid_count} 行可发送。"
+            text = f"本地数据 {source_total} 行｜筛选 {filtered_total} 行｜快照 {current_total} 行｜可发送 {valid_count} 行"
         elif current_total != source_total:
-            text = f"已读取 {source_total} 行数据，当前筛选后 {current_total} 行，其中 {valid_count} 行可发送。"
+            text = f"已读取 {source_total} 行｜当前 {current_total} 行｜可发送 {valid_count} 行"
         elif self.is_local_db_mode():
-            text = f"已读取本地库 {current_total} 行数据，其中 {valid_count} 行可生成微信搜索关键词。"
+            text = f"本地库 {current_total} 行｜可发送 {valid_count} 行"
         else:
-            text = f"已读取 {current_total} 行数据，其中 {valid_count} 行包含可发送的“{self.get_send_target_column()}”值。"
+            text = f"已读取 {current_total} 行｜“{self.get_send_target_column()}”有效 {valid_count} 行"
 
         self.data_info_label.setText(text)
         self.update_execution_overview_label()
@@ -5051,37 +5080,27 @@ class ExcelSenderGUI(QWidget):
         target_column = self.get_send_target_column()
         if not self.columns:
             self.set_label_tone(self.send_target_status_label, "muted")
-            self.send_target_status_label.setText(
-                f"当前发送时会使用“{target_column}”列作为微信搜索关键词。"
-            )
+            self.send_target_status_label.setText(f"默认按“{target_column}”搜索。")
             return
 
         valid_count = len([row for row in self.records if self.get_send_target_value(row)])
         if self.is_local_db_mode():
             if target_column in self.columns:
                 self.set_label_tone(self.send_target_status_label, "success")
-                self.send_target_status_label.setText(
-                    f"当前识别列为“{target_column}”，本地库已匹配 {valid_count} 行微信搜索关键词；群聊会在空值时自动回退。"
-                )
+                self.send_target_status_label.setText(f"识别列：{target_column}｜已匹配 {valid_count} 行")
                 return
 
             self.set_label_tone(self.send_target_status_label, "warning")
-            self.send_target_status_label.setText(
-                f"当前发送识别列“{target_column}”不在导入列中，本地库会按联系人类型自动回退，当前已匹配 {valid_count} 行。"
-            )
+            self.send_target_status_label.setText(f"识别列：{target_column}｜已回退匹配 {valid_count} 行")
             return
 
         if target_column not in self.columns:
             self.set_label_tone(self.send_target_status_label, "danger")
-            self.send_target_status_label.setText(
-                f"当前发送识别列为“{target_column}”，但已读取的 Excel 中没有这列。"
-            )
+            self.send_target_status_label.setText(f"识别列：{target_column}｜Excel 中缺少此列")
             return
 
         self.set_label_tone(self.send_target_status_label, "success")
-        self.send_target_status_label.setText(
-            f"当前发送识别列为“{target_column}”，已匹配 {valid_count} 行可发送数据。"
-        )
+        self.send_target_status_label.setText(f"识别列：{target_column}｜可发送 {valid_count} 行")
 
     def apply_regex_filter(self) -> None:
         if not self.records_loaded:
@@ -5169,21 +5188,17 @@ class ExcelSenderGUI(QWidget):
         placeholders = extract_placeholders(template)
         if not placeholders:
             self.set_label_tone(self.placeholder_status_label, "muted")
-            self.placeholder_status_label.setText("当前模板未使用占位符，将向所有联系人发送相同内容。")
+            self.placeholder_status_label.setText("未使用占位符。")
             return
 
         missing_fields = find_missing_fields(placeholders, self.columns)
-        text = f"识别到占位符：{', '.join(placeholders)}"
+        text = f"占位符：{', '.join(placeholders)}"
         if missing_fields:
             self.set_label_tone(self.placeholder_status_label, "danger")
-            self.placeholder_status_label.setText(
-                text + f"\n缺少对应列：{', '.join(missing_fields)}"
-            )
+            self.placeholder_status_label.setText(text + f"｜缺列：{', '.join(missing_fields)}")
         else:
             self.set_label_tone(self.placeholder_status_label, "success")
-            self.placeholder_status_label.setText(
-                text + "\n所有占位符都能在 Excel 列中找到对应内容。"
-            )
+            self.placeholder_status_label.setText(text + "｜全部可用")
 
     def render_preview(self) -> None:
         self._updating_preview_table = True
