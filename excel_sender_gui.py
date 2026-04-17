@@ -294,6 +294,8 @@ class ExcelSenderGUI(QWidget):
         self.basic_section_title_labels: dict[str, QLabel] = {}
         self.basic_section_toggle_buttons: dict[str, QToolButton] = {}
         self.basic_section_content_widgets: dict[str, QWidget] = {}
+        self.inline_section_groups: dict[str, QGroupBox] = {}
+        self.inline_section_title_labels: dict[str, QLabel] = {}
         self._registered_splitters: dict[str, QSplitter] = {}
         self._splitter_default_sizes: dict[str, list[int]] = {}
         self._theme_mode = str(self.config.get("settings", {}).get("theme_mode") or THEME_MODE_AUTO)
@@ -654,13 +656,6 @@ class ExcelSenderGUI(QWidget):
         self.style_section_title_label(title_label)
         layout.addWidget(title_label)
 
-        divider = QFrame(panel)
-        divider.setFrameShape(QFrame.HLine)
-        divider.setFrameShadow(QFrame.Sunken)
-        divider.setProperty("themeStyleRole", "separator")
-        self.apply_semantic_widget_style(divider)
-        layout.addWidget(divider)
-
         if hint:
             hint_label = QLabel(hint, panel)
             hint_label.setWordWrap(True)
@@ -800,9 +795,9 @@ class ExcelSenderGUI(QWidget):
             return
         if role == "section-panel":
             widget.setStyleSheet(
-                f"background:{tokens['panel_bg']};"
-                f"border:1px solid {tokens['border_strong']};"
-                "border-radius:12px;"
+                f"background:{tokens['panel_alt_bg']};"
+                "border:1px solid transparent;"
+                "border-radius:14px;"
             )
             return
         if role == "empty-state":
@@ -834,18 +829,11 @@ class ExcelSenderGUI(QWidget):
                 "success": tokens["success"],
                 "default": tokens["text_secondary"],
             }.get(tone, tokens["text_secondary"])
-            border_color = {
-                "warning": tokens["warning"],
-                "danger": tokens["danger"],
-                "success": tokens["success"],
-                "default": tokens["border"],
-            }.get(tone, tokens["border"])
             widget.setStyleSheet(
                 f"color:{color};"
                 "background: transparent;"
-                f"border:1px dashed {border_color};"
-                "border-radius:10px;"
-                "padding:12px 14px;"
+                "border:none;"
+                "padding:2px 0px 4px 0px;"
             )
             return
         if role == "separator":
@@ -1057,10 +1045,24 @@ class ExcelSenderGUI(QWidget):
                 color: {tokens['text_primary']};
                 background: {tokens['panel_bg']};
             }}
-            QGroupBox[collapsibleSection="true"] {{
+            QGroupBox[themeVariant="page-shell"] {{
+                border: none;
+                background: transparent;
+                margin-top: 18px;
+                padding: 0px;
+            }}
+            QGroupBox[themeVariant="page-shell"]::title {{
+                left: 0px;
+                padding: 0 0 6px 0;
+                color: {tokens['text_secondary']};
+                background: transparent;
+            }}
+            QGroupBox[collapsibleSection="true"],
+            QGroupBox[inlineSectionHeader="true"] {{
                 margin-top: 0px;
             }}
-            QGroupBox[collapsibleSection="true"]::title {{
+            QGroupBox[collapsibleSection="true"]::title,
+            QGroupBox[inlineSectionHeader="true"]::title {{
                 width: 0px;
                 height: 0px;
                 padding: 0px;
@@ -1213,6 +1215,34 @@ class ExcelSenderGUI(QWidget):
         scroll_area.setFrameShape(QFrame.NoFrame)
         scroll_area.setWidget(content)
         return scroll_area
+
+    def init_inline_section_group(
+        self,
+        group: QGroupBox,
+        section_key: str | None = None,
+    ) -> tuple[QVBoxLayout, QLabel]:
+        title_text = group.title().strip()
+        group.setProperty("inlineSectionHeader", True)
+        group.setProperty("inlineSectionTitle", title_text)
+        group.setTitle("")
+        layout = QVBoxLayout(group)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(10)
+
+        header_row = QHBoxLayout()
+        header_row.setContentsMargins(0, 0, 0, 0)
+        header_row.setSpacing(8)
+
+        title_label = QLabel(title_text, group)
+        self.style_section_title_label(title_label)
+        header_row.addWidget(title_label, 0, Qt.AlignVCenter)
+        header_row.addStretch(1)
+        layout.addLayout(header_row)
+
+        if section_key:
+            self.inline_section_groups[section_key] = group
+            self.inline_section_title_labels[section_key] = title_label
+        return layout, title_label
 
     def init_basic_collapsible_group(self, group: QGroupBox, section_key: str) -> QVBoxLayout:
         title_text = group.title().strip()
@@ -1537,7 +1567,7 @@ class ExcelSenderGUI(QWidget):
 
     def build_settings_group(self) -> QGroupBox:
         group = QGroupBox("基础设置")
-        layout = QVBoxLayout(group)
+        layout, _title_label = self.init_inline_section_group(group, "settings")
         layout.setSpacing(12)
 
         self.wechat_notice_btn = QPushButton("查看微信启动说明", group)
@@ -1620,7 +1650,7 @@ class ExcelSenderGUI(QWidget):
 
     def build_basic_intro_group(self) -> QGroupBox:
         group = QGroupBox("普通用户快捷入口")
-        layout = QVBoxLayout(group)
+        layout, _title_label = self.init_inline_section_group(group, "basic_intro")
         layout.setSpacing(8)
         title = QLabel("按步骤完成一次安全、可暂停的微信群发。")
         self.style_overview_label(title)
@@ -1935,8 +1965,7 @@ class ExcelSenderGUI(QWidget):
 
     def build_task_center_toolbar(self) -> QGroupBox:
         group = QGroupBox("任务中心操作")
-        layout = QVBoxLayout(group)
-        layout.setSpacing(10)
+        layout, _title_label = self.init_inline_section_group(group, "task_center_toolbar")
 
         action_layout = QHBoxLayout()
         self.import_json_button = QPushButton("导入 JSON（多选）")
@@ -1955,8 +1984,7 @@ class ExcelSenderGUI(QWidget):
 
     def build_control_group(self) -> QGroupBox:
         group = QGroupBox("执行概览与主操作")
-        layout = QVBoxLayout(group)
-        layout.setSpacing(10)
+        layout, _title_label = self.init_inline_section_group(group, "send_prepare_control")
 
         summary_row = QHBoxLayout()
         summary_row.setSpacing(12)
@@ -1985,8 +2013,7 @@ class ExcelSenderGUI(QWidget):
 
     def build_execution_settings_group(self) -> QGroupBox:
         group = QGroupBox("发送设置")
-        layout = QVBoxLayout(group)
-        layout.setSpacing(10)
+        layout, _title_label = self.init_inline_section_group(group, "send_prepare_settings")
 
         common_card = QWidget(group)
         common_layout = QVBoxLayout(common_card)
@@ -2113,8 +2140,7 @@ class ExcelSenderGUI(QWidget):
 
     def build_schedule_group(self) -> QGroupBox:
         group = QGroupBox("任务队列")
-        layout = QVBoxLayout(group)
-        layout.setSpacing(10)
+        layout, _title_label = self.init_inline_section_group(group, "task_center_schedule")
 
         action_panel = QWidget(group)
         action_panel_layout = QVBoxLayout(action_panel)
@@ -2194,8 +2220,7 @@ class ExcelSenderGUI(QWidget):
 
     def build_local_store_group(self) -> QGroupBox:
         group = QGroupBox("本地库数据")
-        layout = QVBoxLayout(group)
-        layout.setSpacing(10)
+        layout, _title_label = self.init_inline_section_group(group, "local_store_data")
 
         header_panel = QWidget(group)
         header_layout = QVBoxLayout(header_panel)
@@ -2284,8 +2309,10 @@ class ExcelSenderGUI(QWidget):
 
     def build_excel_group(self) -> QGroupBox:
         group = QGroupBox("Excel 数据")
-        layout = QVBoxLayout(group)
-        layout.setSpacing(10)
+        group.setProperty("themeVariant", "page-shell")
+        self.data_template_excel_group = group
+        layout, _title_label = self.init_inline_section_group(group, "data_template_excel")
+        layout.setSpacing(8)
 
         source_panel = QWidget(group)
         source_layout = QVBoxLayout(source_panel)
@@ -2393,8 +2420,10 @@ class ExcelSenderGUI(QWidget):
 
     def build_template_group(self) -> QGroupBox:
         group = QGroupBox("消息模板")
-        layout = QVBoxLayout(group)
-        layout.setSpacing(10)
+        group.setProperty("themeVariant", "page-shell")
+        self.data_template_template_group = group
+        layout, _title_label = self.init_inline_section_group(group, "data_template_template")
+        layout.setSpacing(8)
 
         self.template_input = QPlainTextEdit(self)
         self.template_input.setPlaceholderText("")
@@ -2403,6 +2432,7 @@ class ExcelSenderGUI(QWidget):
 
         self.placeholder_status_label = QLabel("未使用占位符。")
         self.style_helper_label(self.placeholder_status_label)
+        self.placeholder_status_label.setWordWrap(True)
 
         template_panel_content = QWidget(group)
         template_panel_layout = QVBoxLayout(template_panel_content)
@@ -2486,7 +2516,7 @@ class ExcelSenderGUI(QWidget):
             content=placeholder_panel_content,
         )
         self.data_template_placeholder_section = placeholder_section
-        placeholder_section.setMinimumHeight(120)
+        placeholder_section.setMinimumHeight(96)
         attachment_section = self.build_section_panel(
             parent=group,
             title="通用附件",
@@ -2498,13 +2528,13 @@ class ExcelSenderGUI(QWidget):
             Qt.Vertical,
             [
                 self.configure_splitter_pane(template_section, min_height=240),
-                self.configure_splitter_pane(placeholder_section, min_height=120, vertical_policy=QSizePolicy.Preferred),
+                self.configure_splitter_pane(placeholder_section, min_height=96, vertical_policy=QSizePolicy.Preferred),
                 self.configure_splitter_pane(attachment_section, min_height=220),
             ],
             parent=group,
             stretch_factors=[3, 1, 2],
             splitter_key="data_template.template",
-            default_sizes=[320, 150, 280],
+            default_sizes=[340, 110, 300],
         )
         layout.addWidget(template_splitter, stretch=1)
 
@@ -2512,8 +2542,7 @@ class ExcelSenderGUI(QWidget):
 
     def build_filter_group(self) -> QGroupBox:
         group = QGroupBox("本地库筛选条件")
-        layout = QVBoxLayout(group)
-        layout.setSpacing(10)
+        layout, _title_label = self.init_inline_section_group(group, "local_store_filter")
 
         tip_label = QLabel(
             "筛选作用于“本地库数据”页当前选中的页签。多个字段请用英文逗号分隔；规则留空时，会把当前页签全部数据带入确认弹窗。"
@@ -2617,7 +2646,7 @@ class ExcelSenderGUI(QWidget):
 
     def build_preview_group(self) -> QGroupBox:
         group = QGroupBox("发送计划预览")
-        layout = QVBoxLayout(group)
+        layout, _title_label = self.init_inline_section_group(group, "send_prepare_preview")
 
         self.preview_table = QTableWidget(0, 4, self)
         self.update_preview_headers()
@@ -2645,7 +2674,7 @@ class ExcelSenderGUI(QWidget):
 
     def build_log_group(self) -> QGroupBox:
         group = QGroupBox("执行日志")
-        layout = QVBoxLayout(group)
+        layout, _title_label = self.init_inline_section_group(group, "task_center_log")
 
         self.log_view = QPlainTextEdit(self)
         self.log_view.setReadOnly(True)

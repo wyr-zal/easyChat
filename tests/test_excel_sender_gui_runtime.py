@@ -1,14 +1,18 @@
 from __future__ import annotations
 
 import json
+import os
 import tempfile
 import unittest
 from datetime import datetime
 from pathlib import Path
 from unittest import mock
 
+os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+
 from PyQt5.QtCore import QItemSelectionModel, Qt
 from PyQt5.QtWidgets import QApplication
+from PyQt5.QtWidgets import QFrame
 from PyQt5.QtWidgets import QHeaderView
 from PyQt5.QtWidgets import QMessageBox
 from PyQt5.QtWidgets import QPushButton
@@ -30,11 +34,14 @@ class ExcelSenderGuiRuntimeTests(unittest.TestCase):
         cls.app = QApplication.instance() or QApplication([])
 
     def create_window(self, tmp: Path, db_name: str = "gui-runtime.sqlite3") -> ExcelSenderGUI:
-        return ExcelSenderGUI(
+        window = ExcelSenderGUI(
             config_path=str(tmp / "excel-sender-test-config.json"),
             db_path=str(tmp / db_name),
             start_scheduler=False,
         )
+        window.setAttribute(Qt.WA_DontShowOnScreen, True)
+        window.setAttribute(Qt.WA_ShowWithoutActivating, True)
+        return window
 
     def test_normalize_attachment_items_accepts_json_text(self) -> None:
         with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp_dir:
@@ -150,13 +157,35 @@ class ExcelSenderGuiRuntimeTests(unittest.TestCase):
             tmp = Path(tmp_dir)
             window = self.create_window(tmp)
             try:
-                self.assertEqual(window.data_template_source_section.property("themeStyleRole"), "panel-card")
-                self.assertEqual(window.data_template_target_section.property("themeStyleRole"), "panel-card")
-                self.assertEqual(window.data_template_columns_section.property("themeStyleRole"), "panel-card")
-                self.assertEqual(window.data_template_template_section.property("themeStyleRole"), "panel-card")
-                self.assertEqual(window.data_template_placeholder_section.property("themeStyleRole"), "panel-card")
-                self.assertEqual(window.data_template_attachment_section.property("themeStyleRole"), "panel-card")
+                self.assertEqual(window.data_template_excel_group.property("themeVariant"), "page-shell")
+                self.assertEqual(window.data_template_template_group.property("themeVariant"), "page-shell")
+                self.assertEqual(window.data_template_source_section.property("themeStyleRole"), "section-panel")
+                self.assertEqual(window.data_template_target_section.property("themeStyleRole"), "section-panel")
+                self.assertEqual(window.data_template_columns_section.property("themeStyleRole"), "section-panel")
+                self.assertEqual(window.data_template_template_section.property("themeStyleRole"), "section-panel")
+                self.assertEqual(window.data_template_placeholder_section.property("themeStyleRole"), "section-panel")
+                self.assertEqual(window.data_template_attachment_section.property("themeStyleRole"), "section-panel")
+                self.assertEqual(window.columns_empty_label.property("themeStyleRole"), "section-empty")
+                self.assertEqual(window.common_attachment_empty_label.property("themeStyleRole"), "section-empty")
                 self.assertEqual(window._registered_splitters["data_template.template"].count(), 3)
+                for section in (
+                    window.data_template_source_section,
+                    window.data_template_target_section,
+                    window.data_template_columns_section,
+                    window.data_template_template_section,
+                    window.data_template_placeholder_section,
+                    window.data_template_attachment_section,
+                ):
+                    self.assertFalse(
+                        any(
+                            frame.property("themeStyleRole") == "separator"
+                            for frame in section.findChildren(QFrame)
+                        )
+                    )
+                label_texts = {label.text() for label in window.findChildren(type(window.data_info_label))}
+                self.assertNotIn("先选择 Excel 或 CSV，再决定是否同步导入本地库。", label_texts)
+                self.assertNotIn("支持占位符语法 `{{列名}}`，例如：`您好 {{姓名}}`。", label_texts)
+                self.assertNotIn("这里会即时提示当前模板用了哪些变量，以及是否存在缺失字段风险。", label_texts)
             finally:
                 window.close()
 
@@ -470,6 +499,35 @@ class ExcelSenderGuiRuntimeTests(unittest.TestCase):
             finally:
                 window.close()
 
+    def test_other_pages_also_use_inline_group_headers_instead_of_native_groupbox_titles(self) -> None:
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp_dir:
+            tmp = Path(tmp_dir)
+            window = self.create_window(tmp)
+            try:
+                expected_titles = {
+                    "send_prepare_control": "执行概览与主操作",
+                    "send_prepare_settings": "发送设置",
+                    "send_prepare_preview": "发送计划预览",
+                    "task_center_toolbar": "任务中心操作",
+                    "task_center_schedule": "任务队列",
+                    "task_center_log": "执行日志",
+                    "local_store_data": "本地库数据",
+                    "local_store_filter": "本地库筛选条件",
+                    "data_template_excel": "Excel 数据",
+                    "data_template_template": "消息模板",
+                }
+                for section_key, title_text in expected_titles.items():
+                    self.assertIn(section_key, window.inline_section_groups)
+                    self.assertIn(section_key, window.inline_section_title_labels)
+                    group = window.inline_section_groups[section_key]
+                    title_label = window.inline_section_title_labels[section_key]
+                    self.assertEqual(group.title(), "")
+                    self.assertTrue(bool(group.property("inlineSectionHeader")))
+                    self.assertEqual(group.property("inlineSectionTitle"), title_text)
+                    self.assertEqual(title_label.text(), title_text)
+            finally:
+                window.close()
+
     def test_basic_receiver_shows_empty_state_prompt_before_selection(self) -> None:
         with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp_dir:
             tmp = Path(tmp_dir)
@@ -577,6 +635,28 @@ class ExcelSenderGuiRuntimeTests(unittest.TestCase):
                 self.assertEqual(window.excel_choose_button.minimumWidth(), 0)
                 self.assertEqual(window.load_excel_button.minimumWidth(), 0)
                 self.assertEqual(window.import_local_button.minimumWidth(), 0)
+            finally:
+                window.close()
+
+    def test_task_queue_buttons_use_two_row_three_column_grid(self) -> None:
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp_dir:
+            tmp = Path(tmp_dir)
+            window = self.create_window(tmp)
+            try:
+                expected_positions = {
+                    window.refresh_schedule_button: (0, 0),
+                    window.preview_schedule_button: (0, 1),
+                    window.enable_schedule_button: (0, 2),
+                    window.disable_schedule_button: (1, 0),
+                    window.delete_schedule_button: (1, 1),
+                    window.cancel_schedule_button: (1, 2),
+                }
+                for button, (row, column) in expected_positions.items():
+                    item_index = window.task_action_layout.indexOf(button)
+                    self.assertGreaterEqual(item_index, 0)
+                    item_row, item_column, row_span, column_span = window.task_action_layout.getItemPosition(item_index)
+                    self.assertEqual((item_row, item_column), (row, column))
+                    self.assertEqual((row_span, column_span), (1, 1))
             finally:
                 window.close()
 
