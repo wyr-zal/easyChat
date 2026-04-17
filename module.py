@@ -11,7 +11,7 @@ from PyQt5.QtGui import *
 
 STANDARD_DIALOG_BUTTON_STYLE = """
 QPushButton {
-    font-size: 12pt;
+    font-size: 11pt;
     font-weight: 500;
     min-height: 36px;
     padding: 4px 12px;
@@ -22,8 +22,8 @@ QTableWidget QPushButton {
 }
 """
 
-STANDARD_UI_FONT_SIZE = 12
-HELPER_UI_FONT_SIZE = 11
+STANDARD_UI_FONT_SIZE = 11
+HELPER_UI_FONT_SIZE = 10
 
 
 def build_ui_font(widget: QWidget | None = None, *, point_size: int = STANDARD_UI_FONT_SIZE, bold: bool = False) -> QFont:

@@ -24,8 +24,8 @@ from ui_auto_wechat import WeChat
 from module import *
 from wechat_locale import WeChatLocale
 
-PRIMARY_UI_FONT_SIZE = 12
-HELPER_UI_FONT_SIZE = 11
+PRIMARY_UI_FONT_SIZE = 11
+HELPER_UI_FONT_SIZE = 10
 
 
 class WechatGUI(QWidget):
@@ -160,7 +160,7 @@ class WechatGUI(QWidget):
         self.setStyleSheet(
             """
             QPushButton {
-                font-size: 12pt;
+                font-size: 11pt;
                 font-weight: 500;
                 min-height: 36px;
                 padding: 4px 12px;
@@ -171,6 +171,11 @@ class WechatGUI(QWidget):
             }
             """
         )
+
+    def build_page_from_layout(self, layout: QLayout) -> QWidget:
+        page = QWidget(self)
+        page.setLayout(layout)
+        return page
 
     def build_helper_font(self, point_size: int = HELPER_UI_FONT_SIZE) -> QFont:
         helper_font = QFont(self.font())
@@ -856,32 +861,26 @@ class WechatGUI(QWidget):
 
 
         # 用户选择界面
-        contacts = self.init_choose_contacts()
+        contacts_page = self.build_page_from_layout(self.init_choose_contacts())
 
         # 发送内容界面
-        msg_widget = self.init_send_msg()
+        msg_page = self.build_page_from_layout(self.init_send_msg())
 
         # 定时界面
-        clock = self.init_clock()
+        clock_page = self.build_page_from_layout(self.init_clock())
+
+        self.main_tabs = QTabWidget(self)
+        self.main_tabs.setDocumentMode(True)
+        self.main_tabs.addTab(contacts_page, "联系人管理")
+        self.main_tabs.addTab(msg_page, "发送内容")
+        self.main_tabs.addTab(clock_page, "定时任务")
 
         vbox.addWidget(self.wechat_notice_btn)
-        vbox.addLayout(contacts)
-        vbox.addStretch(5)
-        vbox.addLayout(msg_widget)
-        vbox.addStretch(5)
-        vbox.addLayout(clock)
-        vbox.addStretch(1)
-
-        # qle.textChanged[str].connect(self.onChanged)
-
-        #获取显示器分辨率
-        desktop = QApplication.desktop()
-        screenRect = desktop.screenGeometry()
-        height = screenRect.height()
-        width = screenRect.width()
+        vbox.addWidget(self.main_tabs, stretch=1)
 
         self.setLayout(vbox)
-        # self.setFixedSize(width*0.2, height*0.6)
+        self.resize(1100, 760)
+        self.setMinimumSize(760, 560)
         self.setWindowTitle('EasyChat微信助手(作者：LTEnjoy)')
         self.show()
 
