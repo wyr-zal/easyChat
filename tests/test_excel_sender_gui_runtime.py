@@ -7,8 +7,9 @@ from datetime import datetime
 from pathlib import Path
 from unittest import mock
 
-from PyQt5.QtCore import QItemSelectionModel
+from PyQt5.QtCore import QItemSelectionModel, Qt
 from PyQt5.QtWidgets import QApplication
+from PyQt5.QtWidgets import QHeaderView
 from PyQt5.QtWidgets import QMessageBox
 from PyQt5.QtWidgets import QPushButton
 
@@ -83,6 +84,16 @@ class ExcelSenderGuiRuntimeTests(unittest.TestCase):
             finally:
                 window.close()
 
+    def test_window_starts_with_enlarged_initial_size(self) -> None:
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp_dir:
+            tmp = Path(tmp_dir)
+            window = self.create_window(tmp)
+            try:
+                self.assertEqual(window.width(), 1638)
+                self.assertEqual(window.height(), 1092)
+            finally:
+                window.close()
+
     def test_navigation_shell_groups_pages_into_workbench_and_task_views(self) -> None:
         with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp_dir:
             tmp = Path(tmp_dir)
@@ -114,6 +125,22 @@ class ExcelSenderGuiRuntimeTests(unittest.TestCase):
             finally:
                 window.close()
 
+    def test_data_template_page_keeps_horizontal_layout_and_uses_compact_empty_states(self) -> None:
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp_dir:
+            tmp = Path(tmp_dir)
+            window = self.create_window(tmp)
+            try:
+                window.main_tabs.setCurrentWidget(window.data_template_page)
+                window.show()
+                self.app.processEvents()
+                self.assertEqual(window.data_template_splitter.orientation(), Qt.Horizontal)
+                self.assertTrue(window.columns_empty_label.isVisible())
+                self.assertFalse(window.columns_view.isVisible())
+                self.assertTrue(window.common_attachment_empty_label.isVisible())
+                self.assertFalse(window.common_attachment_table.isVisible())
+            finally:
+                window.close()
+
     def test_advanced_settings_panel_collapses_and_persists(self) -> None:
         with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp_dir:
             tmp = Path(tmp_dir)
@@ -141,6 +168,16 @@ class ExcelSenderGuiRuntimeTests(unittest.TestCase):
             tmp = Path(tmp_dir)
             window = self.create_window(tmp)
             try:
+                parent = window.theme_mode_combo.parentWidget()
+                in_navigation_panel = False
+                while parent is not None:
+                    if parent is window.navigation_panel:
+                        in_navigation_panel = True
+                        break
+                    parent = parent.parentWidget()
+                self.assertTrue(in_navigation_panel)
+                self.assertFalse(hasattr(window, "window_subtitle_label"))
+                self.assertIsNone(window.findChild(type(window.theme_status_label), "windowTitle"))
                 self.assertEqual(window.theme_mode_combo.currentData(), "auto")
                 window.theme_mode_combo.setCurrentIndex(window.theme_mode_combo.findData("dark"))
                 self.assertEqual(window.theme_mode_combo.currentData(), "dark")
@@ -165,10 +202,98 @@ class ExcelSenderGuiRuntimeTests(unittest.TestCase):
                 with mock.patch("excel_sender_gui.QMessageBox.information"):
                     self.assertTrue(window.load_basic_excel_data())
                 self.assertEqual(window.basic_variable_combo.count(), 3)
+                self.assertEqual(window.basic_match_field_combo.count(), 3)
+                self.assertEqual(window.basic_match_field_combo.currentData(), "微信号")
                 self.assertTrue(window.basic_insert_variable_button.isEnabled())
                 window.basic_variable_combo.setCurrentIndex(window.basic_variable_combo.findData("姓名"))
                 window.insert_basic_variable()
                 self.assertIn("{{姓名}}", window.basic_message_input.toPlainText())
+            finally:
+                window.close()
+
+    def test_data_template_page_shows_columns_and_attachment_list_when_content_exists(self) -> None:
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp_dir:
+            tmp = Path(tmp_dir)
+            excel_path = tmp / "contacts.csv"
+            excel_path.write_text("微信号,姓名,城市\nwx_1,张三,上海\nwx_2,李四,北京\n", encoding="utf-8")
+            pdf = tmp / "notice.pdf"
+            pdf.write_bytes(b"%PDF-1.4")
+            window = self.create_window(tmp)
+            try:
+                window.main_tabs.setCurrentWidget(window.data_template_page)
+                window.show()
+                self.app.processEvents()
+                window.excel_path_input.setText(str(excel_path))
+                with mock.patch("excel_sender_gui.QMessageBox.information"):
+                    self.assertTrue(window.load_excel_data())
+                self.app.processEvents()
+                self.assertFalse(window.columns_empty_label.isVisible())
+                self.assertTrue(window.columns_view.isVisible())
+                self.assertIn("微信号", window.columns_view.toPlainText())
+
+                window.common_attachments = [{"file_path": str(pdf), "file_type": "pdf"}]
+                window.refresh_common_attachment_table()
+                self.app.processEvents()
+                self.assertFalse(window.common_attachment_empty_label.isVisible())
+                self.assertTrue(window.common_attachment_table.isVisible())
+                self.assertIn("已添加 1 个通用附件", window.common_attachment_status_label.text())
+            finally:
+                window.close()
+
+    def test_basic_mode_match_candidates_use_selected_field_but_keep_wechat_target(self) -> None:
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp_dir:
+            tmp = Path(tmp_dir)
+            excel_path = tmp / "contacts.csv"
+            excel_path.write_text(
+                "微信号,姓名,备注\nwx_1,张三,班主任A\nwx_2,李四,班主任B\n",
+                encoding="utf-8",
+            )
+            window = self.create_window(tmp)
+            try:
+                window.basic_excel_path_input.setText(str(excel_path))
+                with mock.patch("excel_sender_gui.QMessageBox.information"):
+                    self.assertTrue(window.load_basic_excel_data())
+
+                window.basic_match_field_combo.setCurrentIndex(window.basic_match_field_combo.findData("姓名"))
+                window.basic_match_keyword_input.setText("张")
+                matched_rows, raw_total, duplicate_removed = window.build_basic_match_candidates()
+
+                self.assertEqual(raw_total, 1)
+                self.assertEqual(duplicate_removed, 0)
+                self.assertEqual(len(matched_rows), 1)
+                self.assertEqual(matched_rows[0]["姓名"], "张三")
+                self.assertEqual(matched_rows[0]["_search_key"], "张三")
+                self.assertEqual(matched_rows[0]["__target_value"], "wx_1")
+
+                window.basic_selected_records = [dict(row) for row in matched_rows]
+                window.basic_message_input.setPlainText("您好 {{姓名}}")
+                task_id = window.create_basic_task_snapshot()
+                task_details = window.local_store.get_task_details(task_id)
+                assert task_details is not None
+                self.assertEqual(task_details["filter_fields"], "姓名")
+                self.assertEqual(task_details["target_column"], "微信号")
+            finally:
+                window.close()
+
+    def test_basic_mode_match_field_falls_back_to_wechat_id_when_saved_field_missing(self) -> None:
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp_dir:
+            tmp = Path(tmp_dir)
+            config_path = tmp / "excel-sender-test-config.json"
+            config_path.write_text(
+                json.dumps({"basic_mode": {"match_field": "客户编号"}}, ensure_ascii=False),
+                encoding="utf-8",
+            )
+            excel_path = tmp / "contacts.csv"
+            excel_path.write_text("微信号,姓名\nwx_1,张三\nwx_2,李四\n", encoding="utf-8")
+
+            window = self.create_window(tmp)
+            try:
+                window.basic_excel_path_input.setText(str(excel_path))
+                with mock.patch("excel_sender_gui.QMessageBox.information"):
+                    self.assertTrue(window.load_basic_excel_data())
+                self.assertEqual(window.basic_match_field_combo.currentData(), "微信号")
+                self.assertIn("已自动回退到“微信号”", window.basic_column_status_label.text())
+                self.assertIn("已自动回退到“微信号”", window.basic_match_field_status_label.text())
             finally:
                 window.close()
 
@@ -224,6 +349,110 @@ class ExcelSenderGuiRuntimeTests(unittest.TestCase):
                 window.basic_section_toggle_buttons["attachment"].click()
                 self.assertFalse(window.basic_section_content_widgets["attachment"].isHidden())
                 self.assertEqual(window.basic_section_toggle_buttons["attachment"].text(), "收起")
+            finally:
+                window.close()
+
+    def test_basic_mode_sections_use_inline_header_titles_with_aligned_toggles(self) -> None:
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp_dir:
+            tmp = Path(tmp_dir)
+            window = self.create_window(tmp)
+            try:
+                window.show()
+                self.app.processEvents()
+                expected_titles = {
+                    "import": "1. 导入数据",
+                    "receiver": "2. 选择微信接收人",
+                    "message": "3. 消息内容",
+                    "attachment": "4. 附件（可多个）",
+                    "send": "5. 发送设置",
+                }
+                for section_key, title_text in expected_titles.items():
+                    self.assertEqual(window.basic_section_groups[section_key].title(), "")
+                    title_label = window.basic_section_title_labels[section_key]
+                    toggle_button = window.basic_section_toggle_buttons[section_key]
+                    self.assertEqual(title_label.text(), title_text)
+                    self.assertLessEqual(abs(title_label.geometry().center().y() - toggle_button.geometry().center().y()), 10)
+            finally:
+                window.close()
+
+    def test_basic_receiver_shows_empty_state_prompt_before_selection(self) -> None:
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp_dir:
+            tmp = Path(tmp_dir)
+            window = self.create_window(tmp)
+            try:
+                self.assertIs(window.basic_selected_table_stack.currentWidget(), window.basic_selected_empty_label)
+                self.assertIn("暂无接收人", window.basic_selected_empty_label.text())
+                self.assertEqual(window.basic_selected_summary_label.text(), "未选择接收人｜去重 0 人")
+            finally:
+                window.close()
+
+    def test_basic_receiver_summary_compacts_selection_and_dedup_counts(self) -> None:
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp_dir:
+            tmp = Path(tmp_dir)
+            window = self.create_window(tmp)
+            try:
+                window.basic_last_duplicate_removed = 2
+                window.basic_selected_records = [
+                    {"微信号": "wx_1", "显示名称": "张三", "__target_value": "wx_1"},
+                    {"微信号": "wx_2", "显示名称": "李四", "__target_value": "wx_2"},
+                ]
+                window.refresh_basic_selected_table()
+                headers = [
+                    window.basic_selected_table.horizontalHeaderItem(index).text()
+                    for index in range(window.basic_selected_table.columnCount())
+                ]
+                self.assertEqual(headers, ["微信号", "显示名称", "状态"])
+                self.assertIs(window.basic_selected_table_stack.currentWidget(), window.basic_selected_table)
+                self.assertEqual(window.basic_selected_summary_label.text(), "已确认 2 人｜去重 2 人")
+            finally:
+                window.close()
+
+    def test_basic_receiver_table_columns_are_all_resizable(self) -> None:
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp_dir:
+            tmp = Path(tmp_dir)
+            window = self.create_window(tmp)
+            try:
+                header = window.basic_selected_table.horizontalHeader()
+                modes = [header.sectionResizeMode(index) for index in range(window.basic_selected_table.columnCount())]
+                self.assertEqual(
+                    modes,
+                    [QHeaderView.Interactive, QHeaderView.Interactive, QHeaderView.Interactive],
+                )
+                self.assertGreaterEqual(window.basic_selected_table.columnWidth(0), 150)
+                self.assertGreaterEqual(window.basic_selected_table.columnWidth(1), 300)
+                self.assertGreaterEqual(window.basic_selected_table.columnWidth(2), 100)
+            finally:
+                window.close()
+
+    def test_basic_receiver_table_preserves_manual_column_width_after_refresh(self) -> None:
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp_dir:
+            tmp = Path(tmp_dir)
+            window = self.create_window(tmp)
+            try:
+                window.show()
+                self.app.processEvents()
+                window.basic_selected_records = [
+                    {"微信号": "wx_1", "显示名称": "张三", "__target_value": "wx_1"},
+                    {"微信号": "wx_2", "显示名称": "李四", "__target_value": "wx_2"},
+                ]
+                window.refresh_basic_selected_table()
+                self.app.processEvents()
+
+                window.basic_selected_table.setColumnWidth(0, 230)
+                window.basic_selected_table.setColumnWidth(1, 360)
+                window.basic_selected_table.setColumnWidth(2, 150)
+                self.app.processEvents()
+
+                self.assertEqual(window.basic_selected_table.columnWidth(0), 230)
+                self.assertEqual(window.basic_selected_table.columnWidth(1), 360)
+                self.assertEqual(window.basic_selected_table.columnWidth(2), 150)
+
+                window.refresh_basic_selected_table()
+                self.app.processEvents()
+
+                self.assertEqual(window.basic_selected_table.columnWidth(0), 230)
+                self.assertEqual(window.basic_selected_table.columnWidth(1), 360)
+                self.assertEqual(window.basic_selected_table.columnWidth(2), 150)
             finally:
                 window.close()
 
@@ -336,7 +565,7 @@ class ExcelSenderGuiRuntimeTests(unittest.TestCase):
             window = self.create_window(tmp)
             try:
                 base_size = window.font().pointSize()
-                self.assertEqual(base_size, 12)
+                self.assertEqual(base_size, 11)
                 self.assertEqual(window.data_info_label.font().pointSize(), base_size - 1)
                 self.assertEqual(window.schedule_status_label.font().pointSize(), base_size - 1)
                 self.assertEqual(window.filter_status_label.font().pointSize(), base_size - 1)
