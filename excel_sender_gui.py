@@ -849,6 +849,21 @@ class ExcelSenderGUI(QWidget):
         label.setProperty("themeTone", tone)
         self.apply_semantic_widget_style(label)
 
+    def set_optional_label_text(
+        self,
+        label: QLabel,
+        text: str = "",
+        *,
+        tone: str | None = None,
+        visible: bool | None = None,
+    ) -> None:
+        label.setText(text)
+        if tone is not None:
+            self.set_label_tone(label, tone)
+        if visible is None:
+            visible = bool(str(text).strip())
+        label.setVisible(bool(visible))
+
     def apply_semantic_widget_style(self, widget: QWidget) -> None:
         role = str(widget.property("themeStyleRole") or "")
         tone = str(widget.property("themeTone") or "default")
@@ -1825,13 +1840,15 @@ class ExcelSenderGUI(QWidget):
         path_layout.addWidget(self.basic_load_button)
         layout.addLayout(path_layout)
 
-        self.basic_data_status_label = QLabel("尚未导入数据。")
+        self.basic_data_status_label = QLabel("")
         self.style_helper_label(self.basic_data_status_label, color="#555")
         layout.addWidget(self.basic_data_status_label)
 
-        self.basic_column_status_label = QLabel("导入 Excel 后可从列名中选择匹配字段；发送仍要求存在“微信号”列。")
+        self.basic_column_status_label = QLabel("")
         self.style_helper_label(self.basic_column_status_label, color="#555")
         layout.addWidget(self.basic_column_status_label)
+        self.set_optional_label_text(self.basic_data_status_label, "", tone="muted", visible=False)
+        self.set_optional_label_text(self.basic_column_status_label, "", tone="muted", visible=False)
         layout.addStretch(1)
         return group
 
@@ -1868,15 +1885,17 @@ class ExcelSenderGUI(QWidget):
 
         info_row = QHBoxLayout()
         info_row.setSpacing(8)
-        self.basic_match_field_status_label = QLabel("发送仍以“微信号”列为准。")
+        self.basic_match_field_status_label = QLabel("")
         self.style_helper_label(self.basic_match_field_status_label, color="#555")
         info_row.addWidget(self.basic_match_field_status_label, stretch=1)
 
-        self.basic_selected_summary_label = QLabel("未选择接收人｜去重 0 人")
+        self.basic_selected_summary_label = QLabel("")
         self.style_helper_label(self.basic_selected_summary_label, color="#555")
         self.basic_selected_summary_label.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
         info_row.addWidget(self.basic_selected_summary_label)
         layout.addLayout(info_row)
+        self.set_optional_label_text(self.basic_match_field_status_label, "", tone="muted", visible=False)
+        self.set_optional_label_text(self.basic_selected_summary_label, "", tone="muted", visible=False)
 
         self.basic_selected_table = QTableWidget(0, 3, self)
         self.basic_selected_table.setHorizontalHeaderLabels(["微信号", "显示名称", "状态"])
@@ -1906,7 +1925,7 @@ class ExcelSenderGUI(QWidget):
         self.basic_selected_table_stack.addWidget(self.basic_selected_table)
         layout.addWidget(self.basic_selected_table_stack, stretch=1)
         self.set_basic_receiver_overview(
-            "未选择接收人",
+            "",
             duplicate_removed=0,
             tone="muted",
             empty_message=self.get_basic_receiver_empty_prompt(),
@@ -1931,9 +1950,10 @@ class ExcelSenderGUI(QWidget):
         variable_row.addWidget(self.basic_insert_variable_button)
         layout.addLayout(variable_row)
 
-        self.basic_variable_status_label = QLabel("导入 Excel 后会在这里显示可插入的变量。")
+        self.basic_variable_status_label = QLabel("")
         self.style_helper_label(self.basic_variable_status_label, color="#555")
         layout.addWidget(self.basic_variable_status_label)
+        self.set_optional_label_text(self.basic_variable_status_label, "", tone="muted", visible=False)
 
         self.basic_message_input = QPlainTextEdit(self)
         self.basic_message_input.setPlaceholderText("请输入本次要发送的消息内容。")
@@ -2015,13 +2035,15 @@ class ExcelSenderGUI(QWidget):
         settings_grid.setColumnStretch(4, 1)
         layout.addLayout(settings_grid)
 
-        self.basic_progress_label = QLabel("当前没有可发送任务。")
+        self.basic_progress_label = QLabel("")
         self.style_overview_label(self.basic_progress_label)
         layout.addWidget(self.basic_progress_label)
 
-        self.basic_runtime_status_label = QLabel("等待发送。")
+        self.basic_runtime_status_label = QLabel("")
         self.style_helper_label(self.basic_runtime_status_label, color="#555")
         layout.addWidget(self.basic_runtime_status_label)
+        self.set_optional_label_text(self.basic_progress_label, "", visible=False)
+        self.set_optional_label_text(self.basic_runtime_status_label, "", tone="muted", visible=False)
 
         action_row = QHBoxLayout()
         self.basic_start_button = QPushButton("发送")
@@ -3191,15 +3213,14 @@ class ExcelSenderGUI(QWidget):
             self.update_basic_variable_options()
             self.update_basic_match_field_options()
             self.set_basic_receiver_overview(
-                "未选择接收人",
+                "",
                 duplicate_removed=0,
                 tone="muted",
                 empty_message=self.get_basic_receiver_empty_prompt(),
             )
             self.refresh_basic_selected_table()
             self.update_basic_progress_status()
-            self.basic_data_status_label.setText("文件已变更，请重新点击“导入数据”。")
-            self.set_label_tone(self.basic_data_status_label, "warning")
+            self.set_optional_label_text(self.basic_data_status_label, "", tone="muted", visible=False)
 
     def select_basic_excel_file(self) -> None:
         path = QFileDialog.getOpenFileName(
@@ -3227,20 +3248,17 @@ class ExcelSenderGUI(QWidget):
             self.basic_last_match_total = 0
             self.basic_last_duplicate_removed = 0
             self.invalidate_basic_task()
-            self.basic_data_status_label.setText(f"读取失败：{exc}")
-            self.set_label_tone(self.basic_data_status_label, "danger")
+            self.set_optional_label_text(self.basic_data_status_label, "", tone="muted", visible=False)
             self.update_basic_match_field_options()
             self.set_basic_receiver_overview(
-                "未选择接收人",
+                "",
                 duplicate_removed=0,
                 tone="muted",
                 empty_message=self.get_basic_receiver_empty_prompt(),
             )
-            self.basic_column_status_label.setText("请确认 Excel 中存在“微信号”列后再重试。")
-            self.set_label_tone(self.basic_column_status_label, "warning")
             if hasattr(self, "basic_match_field_status_label"):
-                self.basic_match_field_status_label.setText("当前无法匹配接收人，请先导入包含“微信号”列的 Excel。")
-                self.set_label_tone(self.basic_match_field_status_label, "warning")
+                self.set_optional_label_text(self.basic_match_field_status_label, "", tone="muted", visible=False)
+            self.set_optional_label_text(self.basic_column_status_label, "", tone="muted", visible=False)
             self.update_basic_variable_options()
             self.refresh_basic_selected_table()
             self.update_basic_progress_status()
@@ -3257,17 +3275,13 @@ class ExcelSenderGUI(QWidget):
         self.update_basic_variable_options()
         self.update_basic_match_field_options()
         self.set_basic_receiver_overview(
-            "未选择接收人",
+            "",
             duplicate_removed=0,
             tone="muted",
             empty_message=self.get_basic_receiver_empty_prompt(),
         )
         self.refresh_basic_selected_table()
-        valid_count = len([row for row in self.basic_source_records if (row.get(DEFAULT_SEND_TARGET_COLUMN) or "").strip()])
-        self.basic_data_status_label.setText(
-            f"已导入 {len(self.basic_source_records)} 行数据，其中 {valid_count} 行包含可用“微信号”。"
-        )
-        self.set_label_tone(self.basic_data_status_label, "success")
+        self.set_optional_label_text(self.basic_data_status_label, "", tone="muted", visible=False)
         self.update_basic_progress_status()
         QMessageBox.information(self, "读取成功", f"已成功读取 {len(self.basic_source_records)} 行 Excel 数据。")
         return True
@@ -3283,7 +3297,7 @@ class ExcelSenderGUI(QWidget):
         return str(self.basic_match_field or DEFAULT_SEND_TARGET_COLUMN).strip() or DEFAULT_SEND_TARGET_COLUMN
 
     def get_basic_receiver_empty_prompt(self) -> str:
-        return "暂无接收人，请先输入关键词并点击“预览结果”。"
+        return ""
 
     def set_basic_receiver_overview(
         self,
@@ -3296,8 +3310,13 @@ class ExcelSenderGUI(QWidget):
     ) -> None:
         if hasattr(self, "basic_selected_summary_label"):
             removed_count = self.basic_last_duplicate_removed if duplicate_removed is None else max(int(duplicate_removed), 0)
-            self.basic_selected_summary_label.setText(f"{status_text}｜去重 {removed_count} 人")
-            self.set_label_tone(self.basic_selected_summary_label, tone)
+            summary_text = f"{status_text}｜去重 {removed_count} 人" if str(status_text).strip() else ""
+            self.set_optional_label_text(
+                self.basic_selected_summary_label,
+                summary_text,
+                tone=tone,
+                visible=bool(summary_text),
+            )
         if hasattr(self, "basic_selected_empty_label"):
             message = empty_message or self.get_basic_receiver_empty_prompt()
             self.basic_selected_empty_label.setText(message)
@@ -3305,36 +3324,17 @@ class ExcelSenderGUI(QWidget):
             self.apply_semantic_widget_style(self.basic_selected_empty_label)
 
     def update_basic_match_field_status(self, fallback_message: str = "") -> None:
-        match_field = self.get_basic_match_field()
         display_columns = self.get_basic_display_columns()
         if not display_columns:
-            self.basic_column_status_label.setText("导入 Excel 后可从列名中选择匹配字段；发送仍要求存在“微信号”列。")
-            self.set_label_tone(self.basic_column_status_label, "muted")
+            self.set_optional_label_text(self.basic_column_status_label, "", tone="muted", visible=False)
             if hasattr(self, "basic_match_field_status_label"):
-                self.basic_match_field_status_label.setText("导入 Excel 后可选择匹配字段；发送仍以“微信号”为准。")
-                self.set_label_tone(self.basic_match_field_status_label, "muted")
+                self.set_optional_label_text(self.basic_match_field_status_label, "", tone="muted", visible=False)
             return
 
-        valid_count = len([row for row in self.basic_source_records if (row.get(DEFAULT_SEND_TARGET_COLUMN) or "").strip()])
-        import_text = (
-            f"当前可从 {len(display_columns)} 个字段中选择匹配列；发送仍使用“微信号”，"
-            f"当前共有 {valid_count} 行可发送。"
-        )
-        receiver_text = f"当前按“{match_field}”字段匹配；发送仍以“微信号”为准。"
-        if fallback_message:
-            import_text = f"{import_text} {fallback_message}"
-            receiver_text = f"{receiver_text} {fallback_message}"
-            self.set_label_tone(self.basic_column_status_label, "warning")
-            if hasattr(self, "basic_match_field_status_label"):
-                self.set_label_tone(self.basic_match_field_status_label, "warning")
-        else:
-            self.set_label_tone(self.basic_column_status_label, "muted")
-            if hasattr(self, "basic_match_field_status_label"):
-                self.set_label_tone(self.basic_match_field_status_label, "muted")
-
-        self.basic_column_status_label.setText(import_text)
+        del fallback_message
+        self.set_optional_label_text(self.basic_column_status_label, "", tone="muted", visible=False)
         if hasattr(self, "basic_match_field_status_label"):
-            self.basic_match_field_status_label.setText(receiver_text)
+            self.set_optional_label_text(self.basic_match_field_status_label, "", tone="muted", visible=False)
 
     def update_basic_match_field_options(self) -> None:
         if not hasattr(self, "basic_match_field_combo"):
@@ -3385,12 +3385,7 @@ class ExcelSenderGUI(QWidget):
         enabled = bool(display_columns)
         self.basic_variable_combo.setEnabled(enabled)
         self.basic_insert_variable_button.setEnabled(enabled)
-        if enabled:
-            self.basic_variable_status_label.setText(f"当前可插入 {len(display_columns)} 个变量，例如：{display_columns[0]}。")
-            self.set_label_tone(self.basic_variable_status_label, "success")
-        else:
-            self.basic_variable_status_label.setText("导入 Excel 后会在这里显示可插入的变量。")
-            self.set_label_tone(self.basic_variable_status_label, "muted")
+        self.set_optional_label_text(self.basic_variable_status_label, "", tone="muted", visible=False)
 
     def update_send_target_column_options(self) -> None:
         if not hasattr(self, "send_target_column_combo"):
@@ -3439,7 +3434,7 @@ class ExcelSenderGUI(QWidget):
         self.update_basic_match_field_status()
         if not self.basic_selected_records and self.basic_task_id is None:
             self.set_basic_receiver_overview(
-                "未选择接收人",
+                "",
                 duplicate_removed=self.basic_last_duplicate_removed,
                 tone="muted",
                 empty_message=self.get_basic_receiver_empty_prompt(),
@@ -3452,7 +3447,7 @@ class ExcelSenderGUI(QWidget):
         self.save_basic_mode_config()
         if not self.basic_selected_records and self.basic_task_id is None:
             self.set_basic_receiver_overview(
-                "未选择接收人",
+                "",
                 duplicate_removed=self.basic_last_duplicate_removed,
                 tone="muted",
                 empty_message=self.get_basic_receiver_empty_prompt(),
@@ -3526,10 +3521,10 @@ class ExcelSenderGUI(QWidget):
         if not matched_rows:
             self.basic_selected_records = []
             self.set_basic_receiver_overview(
-                "未找到接收人",
+                "",
                 duplicate_removed=duplicate_removed,
                 tone="warning",
-                empty_message="没有找到匹配的接收人，请调整关键词或匹配字段后重试。",
+                empty_message="",
                 empty_tone="warning",
             )
             self.refresh_basic_selected_table()
@@ -3594,6 +3589,13 @@ class ExcelSenderGUI(QWidget):
                 tone="success",
                 empty_message=self.get_basic_receiver_empty_prompt(),
             )
+        else:
+            self.set_basic_receiver_overview(
+                "",
+                duplicate_removed=self.basic_last_duplicate_removed,
+                tone="muted",
+                empty_message=self.get_basic_receiver_empty_prompt(),
+            )
 
     def update_basic_progress_status(self) -> None:
         if not hasattr(self, "basic_progress_label"):
@@ -3601,9 +3603,10 @@ class ExcelSenderGUI(QWidget):
         total_selected = len(self.basic_selected_records)
         batch_limit = self.basic_batch_limit_spin.value() if hasattr(self, "basic_batch_limit_spin") else 0
         if total_selected == 0:
-            self.basic_progress_label.setText("当前没有可发送任务。")
-            self.basic_runtime_status_label.setText("请先导入 Excel 并确认接收人。")
-            self.set_label_tone(self.basic_runtime_status_label, "muted")
+            self.set_optional_label_text(self.basic_progress_label, "", visible=False)
+            self.set_optional_label_text(self.basic_runtime_status_label, "", tone="muted", visible=False)
+            if hasattr(self, "basic_start_button"):
+                self.basic_start_button.setText("发送")
             return
 
         remaining = total_selected
@@ -3612,20 +3615,27 @@ class ExcelSenderGUI(QWidget):
             task_records = self.local_store.load_task_records(self.basic_task_id)
             remaining = len(self.get_basic_pending_records(self.basic_task_id))
             completed = max(len(task_records) - remaining, 0)
-        self.basic_progress_label.setText(
-            f"当前已确认 {total_selected} 人；本次计划发送 {min(batch_limit, remaining) if remaining else 0} 人；剩余 {remaining} 人。"
+        self.set_optional_label_text(
+            self.basic_progress_label,
+            f"当前已确认 {total_selected} 人；本次计划发送 {min(batch_limit, remaining) if remaining else 0} 人；剩余 {remaining} 人。",
+            visible=True,
         )
         if remaining == 0:
-            self.basic_runtime_status_label.setText(f"当前名单已全部处理完成，共完成 {completed} 人。")
-            self.set_label_tone(self.basic_runtime_status_label, "success")
-        elif completed > 0:
-            self.basic_runtime_status_label.setText(
-                f"上一轮已完成 {completed} 人，剩余 {remaining} 人；再次点击发送会从剩余联系人继续。"
+            self.set_optional_label_text(
+                self.basic_runtime_status_label,
+                f"当前名单已全部处理完成，共完成 {completed} 人。",
+                tone="success",
+                visible=True,
             )
-            self.set_label_tone(self.basic_runtime_status_label, "warning")
+        elif completed > 0:
+            self.set_optional_label_text(
+                self.basic_runtime_status_label,
+                f"上一轮已完成 {completed} 人，剩余 {remaining} 人；再次点击发送会从剩余联系人继续。",
+                tone="warning",
+                visible=True,
+            )
         else:
-            self.basic_runtime_status_label.setText("准备就绪，点击“发送”即可开始。")
-            self.set_label_tone(self.basic_runtime_status_label, "muted")
+            self.set_optional_label_text(self.basic_runtime_status_label, "", tone="muted", visible=False)
         if hasattr(self, "basic_start_button"):
             self.basic_start_button.setText("继续发送" if completed > 0 and remaining > 0 else "发送")
 
@@ -3804,10 +3814,12 @@ class ExcelSenderGUI(QWidget):
             common_attachments_override=self.basic_attachments,
             send_origin="basic",
         )
-        self.basic_runtime_status_label.setText(
-            f"正在发送：本轮 {len(batch_records)} 人，当前总剩余 {len(pending_records)} 人。"
+        self.set_optional_label_text(
+            self.basic_runtime_status_label,
+            f"正在发送：本轮 {len(batch_records)} 人，当前总剩余 {len(pending_records)} 人。",
+            tone="warning",
+            visible=True,
         )
-        self.set_label_tone(self.basic_runtime_status_label, "warning")
 
     def on_local_store_tab_changed(self, _index: int) -> None:
         self.update_local_filter_scope()
@@ -6276,8 +6288,12 @@ class ExcelSenderGUI(QWidget):
                 self.basic_stop_button.setEnabled(False)
             self.send_status_label.setText("正在停止...")
             if self.current_send_origin == "basic":
-                self.basic_runtime_status_label.setText("正在停止当前批次，请稍候...")
-                self.set_label_tone(self.basic_runtime_status_label, "warning")
+                self.set_optional_label_text(
+                    self.basic_runtime_status_label,
+                    "正在停止当前批次，请稍候...",
+                    tone="warning",
+                    visible=True,
+                )
             self.append_log("已收到停止请求，将在当前联系人到达安全停止点后尽快终止。")
 
     def on_send_progress(self, current: int, total: int, wechat_id: str) -> None:
@@ -6325,17 +6341,33 @@ class ExcelSenderGUI(QWidget):
             remaining = len(self.get_basic_pending_records(self.basic_task_id))
             if not summary.get("error") and not summary.get("stopped_by_error") and not summary.get("stopped") and remaining > 0:
                 message += f"\n状态：已达到本次发送人数上限，剩余 {remaining} 人待继续"
-                self.basic_runtime_status_label.setText(f"本轮已完成，剩余 {remaining} 人。再次点击发送会从剩余联系人继续。")
-                self.set_label_tone(self.basic_runtime_status_label, "warning")
+                self.set_optional_label_text(
+                    self.basic_runtime_status_label,
+                    f"本轮已完成，剩余 {remaining} 人。再次点击发送会从剩余联系人继续。",
+                    tone="warning",
+                    visible=True,
+                )
             elif remaining == 0 and not summary.get("error"):
-                self.basic_runtime_status_label.setText("当前接收人名单已全部处理完成。")
-                self.set_label_tone(self.basic_runtime_status_label, "success")
+                self.set_optional_label_text(
+                    self.basic_runtime_status_label,
+                    "当前接收人名单已全部处理完成。",
+                    tone="success",
+                    visible=True,
+                )
             elif summary.get("stopped"):
-                self.basic_runtime_status_label.setText("已手动停止当前批次，可再次点击发送继续剩余联系人。")
-                self.set_label_tone(self.basic_runtime_status_label, "warning")
+                self.set_optional_label_text(
+                    self.basic_runtime_status_label,
+                    "已手动停止当前批次，可再次点击发送继续剩余联系人。",
+                    tone="warning",
+                    visible=True,
+                )
             else:
-                self.basic_runtime_status_label.setText("本轮发送出现异常，请处理后再决定是否继续。")
-                self.set_label_tone(self.basic_runtime_status_label, "danger")
+                self.set_optional_label_text(
+                    self.basic_runtime_status_label,
+                    "本轮发送出现异常，请处理后再决定是否继续。",
+                    tone="danger",
+                    visible=True,
+                )
             self.refresh_basic_selected_table()
             self.update_basic_progress_status()
 

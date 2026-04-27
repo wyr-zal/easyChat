@@ -312,8 +312,8 @@ class ExcelSenderGuiRuntimeTests(unittest.TestCase):
                 self.app.processEvents()
                 self.assertLess(window.basic_import_group.height(), window.basic_message_group.height())
                 self.assertLessEqual(
-                    window.basic_import_group.height(),
-                    window.basic_import_group.sizeHint().height() + 80,
+                    abs(window.basic_import_group.height() - SPLITTER_STARTUP_DEFAULT_SIZES["workbench.basic.left"][0]),
+                    12,
                 )
             finally:
                 window.close()
@@ -337,8 +337,8 @@ class ExcelSenderGuiRuntimeTests(unittest.TestCase):
                 self.assertIsNotNone(send_content.layout().itemAt(send_content.layout().count() - 1).spacerItem())
 
                 import_status_bottom = (
-                    window.basic_column_status_label.mapTo(import_content, QPoint(0, 0)).y()
-                    + window.basic_column_status_label.height()
+                    window.basic_load_button.mapTo(import_content, QPoint(0, 0)).y()
+                    + window.basic_load_button.height()
                 )
                 send_button_bottom = (
                     window.basic_start_button.mapTo(send_content, QPoint(0, 0)).y()
@@ -773,8 +773,21 @@ class ExcelSenderGuiRuntimeTests(unittest.TestCase):
                 with mock.patch("excel_sender_gui.QMessageBox.information"):
                     self.assertTrue(window.load_basic_excel_data())
                 self.assertEqual(window.basic_match_field_combo.currentData(), "微信号")
-                self.assertIn("已自动回退到“微信号”", window.basic_column_status_label.text())
-                self.assertIn("已自动回退到“微信号”", window.basic_match_field_status_label.text())
+                self.assertTrue(window.basic_column_status_label.isHidden())
+                self.assertTrue(window.basic_match_field_status_label.isHidden())
+            finally:
+                window.close()
+
+    def test_basic_mode_requires_previous_steps_via_popup_instead_of_inline_hint(self) -> None:
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp_dir:
+            tmp = Path(tmp_dir)
+            window = self.create_window(tmp)
+            try:
+                with mock.patch("excel_sender_gui.QMessageBox.information") as info_mock:
+                    window.start_basic_send()
+                info_mock.assert_called_once_with(window, "无法发送", "请先导入 Excel 并确认接收人。")
+                self.assertTrue(window.basic_runtime_status_label.isHidden())
+                self.assertTrue(window.basic_progress_label.isHidden())
             finally:
                 window.close()
 
@@ -885,14 +898,20 @@ class ExcelSenderGuiRuntimeTests(unittest.TestCase):
             finally:
                 window.close()
 
-    def test_basic_receiver_shows_empty_state_prompt_before_selection(self) -> None:
+    def test_basic_mode_hides_static_helper_copy_before_user_actions(self) -> None:
         with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp_dir:
             tmp = Path(tmp_dir)
             window = self.create_window(tmp)
             try:
                 self.assertIs(window.basic_selected_table_stack.currentWidget(), window.basic_selected_empty_label)
-                self.assertIn("暂无接收人", window.basic_selected_empty_label.text())
-                self.assertEqual(window.basic_selected_summary_label.text(), "未选择接收人｜去重 0 人")
+                self.assertEqual(window.basic_selected_empty_label.text(), "")
+                self.assertTrue(window.basic_selected_summary_label.isHidden())
+                self.assertTrue(window.basic_data_status_label.isHidden())
+                self.assertTrue(window.basic_column_status_label.isHidden())
+                self.assertTrue(window.basic_match_field_status_label.isHidden())
+                self.assertTrue(window.basic_variable_status_label.isHidden())
+                self.assertTrue(window.basic_progress_label.isHidden())
+                self.assertTrue(window.basic_runtime_status_label.isHidden())
             finally:
                 window.close()
 
@@ -913,6 +932,7 @@ class ExcelSenderGuiRuntimeTests(unittest.TestCase):
                 ]
                 self.assertEqual(headers, ["微信号", "显示名称", "状态"])
                 self.assertIs(window.basic_selected_table_stack.currentWidget(), window.basic_selected_table)
+                self.assertFalse(window.basic_selected_summary_label.isHidden())
                 self.assertEqual(window.basic_selected_summary_label.text(), "已确认 2 人｜去重 2 人")
             finally:
                 window.close()
