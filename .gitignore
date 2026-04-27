@@ -31,12 +31,17 @@ Desktop.ini
 CONTEXT.md
 wechat_config.json
 excel_sender_config.json
+group_manager_config.json
 contacts_*.csv
 filtered_wechat_ids*.txt
 @AutomationLog.txt
+explore_logs/
+explore_group_controls.py
+explore_exit_button.py
 nul
 docs/easychat_local.sqlite3
 docs/ralph_store_smoke.sqlite3
+docs/pycache_tmp/
 logs/
 task/
 *.easychat.log

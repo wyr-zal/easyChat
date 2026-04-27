@@ -28,6 +28,15 @@ class WeChatLocale:
         "chat_history": {"en-US": "Chat History",   "zh-CN": "聊天记录",        "zh-TW": "聊天記錄"},
         "photos_n_videos":  {"en-US": "Photos & Videos", "zh-CN": "图片与视频", "zh-TW": "圖片與影片"},
         "copy":      {"en-US": "Copy",              "zh-CN": "复制",            "zh-TW": "複製"},
+
+        "quick_action":     {"en-US": "Quick Action",      "zh-CN": "快捷操作",        "zh-TW": "快捷操作"},
+        "initiate_group":   {"en-US": "Start Group Chat",  "zh-CN": "发起群聊",        "zh-TW": "發起群聊"},
+        "chat_info":        {"en-US": "Chat Info",         "zh-CN": "聊天信息",        "zh-TW": "聊天資訊"},
+        "done":             {"en-US": "Done",              "zh-CN": "完成",            "zh-TW": "完成"},
+        "remove":           {"en-US": "Remove",            "zh-CN": "移出",            "zh-TW": "移出"},
+        "cancel":           {"en-US": "Cancel",            "zh-CN": "取消",            "zh-TW": "取消"},
+        "exit_group":       {"en-US": "Exit Group",        "zh-CN": "退出群聊",        "zh-TW": "退出群聊"},
+        "chat_members":     {"en-US": "Chat Members",      "zh-CN": "聊天成员",        "zh-TW": "聊天成員"},
     }
 
     """
