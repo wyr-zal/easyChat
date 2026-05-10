@@ -7,6 +7,7 @@ EasyChat 群聊管理 GUI
 
 import json
 import os
+import re
 import sys
 from datetime import datetime
 from pathlib import Path
@@ -739,6 +740,19 @@ class GroupManagerGUI(QWidget):
             return pd.read_csv(path, dtype=str).fillna("")
         return pd.read_excel(path, dtype=str).fillna("")
 
+    @staticmethod
+    def _split_members(members_str: str, extra_sep: str = "") -> list:
+        """同时识别中英文逗号、分号、顿号；可叠加用户自定义分隔符。"""
+        if not members_str:
+            return []
+        # 默认分隔符集合：英文逗号、中文逗号、英文分号、中文分号、顿号
+        default_seps = [",", "，", ";", "；", "、"]
+        seps = list(default_seps)
+        if extra_sep and extra_sep not in seps:
+            seps.append(extra_sep)
+        pattern = "|".join(re.escape(s) for s in seps)
+        return [m.strip() for m in re.split(pattern, members_str) if m.strip()]
+
     def _load_create_excel(self):
         try:
             path = self.create_path_input.text().strip()
@@ -755,7 +769,7 @@ class GroupManagerGUI(QWidget):
             for _, row in df.iterrows():
                 group_name = str(row.get(name_col, "")).strip() if name_col in df.columns else ""
                 members_str = str(row.get(member_col, "")).strip()
-                members = [m.strip() for m in members_str.split(sep) if m.strip()]
+                members = self._split_members(members_str, sep)
                 if members:
                     self.create_tasks.append({
                         "group_name": group_name,
@@ -798,7 +812,7 @@ class GroupManagerGUI(QWidget):
                     continue
                 if is_remove_mode:
                     members_str = str(row.get(member_col, "")).strip()
-                    members = [m.strip() for m in members_str.split(",") if m.strip()]
+                    members = self._split_members(members_str)
                     self.delete_tasks.append({
                         "group_name": group_name,
                         "members": members,
