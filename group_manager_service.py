@@ -105,6 +105,38 @@ def _find_picker_contact_result(picker, name: str):
     return fallback_item
 
 
+def _collect_picker_contact_checkboxes(picker):
+    """收集选人/移出窗口中的可勾选联系人组件。"""
+    candidates = []
+    for automation_id in (
+        "sp_search_new_chat_result_list",
+        "sp_to_select_contact_list",
+    ):
+        contact_list = picker.ListControl(
+            AutomationId=automation_id, searchDepth=20
+        )
+        if contact_list.Exists(0, 0):
+            candidates.extend(contact_list.GetChildren())
+            candidates.extend(_iter_descendants(contact_list, max_depth=8))
+    candidates.extend(_iter_descendants(picker, max_depth=12))
+
+    result = []
+    seen = set()
+    for item in candidates:
+        marker = id(item)
+        if marker in seen:
+            continue
+        seen.add(marker)
+        try:
+            control_type = item.ControlTypeName or ""
+            item_name = (item.Name or "").strip()
+        except Exception:
+            continue
+        if control_type in {"CheckBoxControl", "ListItemControl"} and item_name:
+            result.append(item)
+    return result
+
+
 def _find_descendant_by_name(control, name: str, max_depth: int = 12):
     for item in _iter_descendants(control, max_depth=max_depth):
         try:
@@ -112,6 +144,53 @@ def _find_descendant_by_name(control, name: str, max_depth: int = 12):
                 return item
         except Exception:
             continue
+    return None
+
+
+def _has_ancestor_class(control, class_name: str) -> bool:
+    current = control
+    while current is not None:
+        try:
+            if (current.ClassName or "") == class_name:
+                return True
+            current = current.GetParentControl()
+        except Exception:
+            return False
+    return False
+
+
+def _find_main_search_box(win, search_name: str):
+    candidates = []
+    for item in _iter_descendants(win, max_depth=25):
+        try:
+            if (item.ControlTypeName or "") != "EditControl":
+                continue
+            if (item.Name or "") != search_name:
+                continue
+            if _has_ancestor_class(item, MEMBER_INFO_CLS):
+                continue
+            rect = item.BoundingRectangle
+            candidates.append((rect.left, rect.top, item))
+        except Exception:
+            continue
+
+    if candidates:
+        candidates.sort(key=lambda candidate: (candidate[1], candidate[0]))
+        return candidates[0][2]
+
+    return auto.EditControl(Depth=13, Name=search_name)
+
+
+def _find_group_action_control(control, names: tuple[str, ...], max_depth: int = 12):
+    """在群信息侧栏内按组件名称定位操作项，如“移出”“退出群聊”。"""
+    normalized_names = tuple(name for name in names if name)
+    for item in _iter_descendants(control, max_depth=max_depth):
+        try:
+            item_name = (item.Name or "").strip()
+        except Exception:
+            continue
+        if item_name in normalized_names:
+            return item
     return None
 
 
@@ -210,7 +289,9 @@ class GroupManagerThread(QThread):
 
     def _search_contact(self, name: str):
         win = self._open_wechat()
-        search_box = auto.EditControl(Depth=13, Name=self.lc.search)
+        search_box = _find_main_search_box(win, self.lc.search)
+        if not search_box.Exists(2, 1):
+            raise RuntimeError("未找到左侧会话搜索框")
         _click(search_box)
         time.sleep(0.2)
         pyperclip.copy(name)
@@ -432,37 +513,8 @@ class GroupManagerThread(QThread):
         self._search_contact(group_name)
         time.sleep(0.5)
 
-        chat_info_btn = auto.ButtonControl(Name=self.lc.chat_info, searchDepth=25)
-        if not chat_info_btn.Exists(3, 1):
-            raise RuntimeError("未找到 '聊天信息' 按钮")
-        _click(chat_info_btn)
-        time.sleep(0.8)
-
-        member_list = auto.ListControl(AutomationId="chat_member_list", searchDepth=25)
-        if not member_list.Exists(3, 1):
-            raise RuntimeError("未找到成员列表")
-
-        items = member_list.GetChildren()
-        remove_btn = None
-        for item in reversed(items):
-            name = item.Name or ""
-            if name in ("", "-") or "移出" in name.lower() or "删除" in name.lower():
-                remove_btn = item
-                break
-            cls = item.ClassName or ""
-            if "Add" not in cls and "ChatMemberCell" not in cls:
-                continue
-
-        if remove_btn is None:
-            last_items = items[-2:] if len(items) >= 2 else items
-            for item in reversed(last_items):
-                remove_btn = item
-                break
-
-        if remove_btn is None:
-            raise RuntimeError("未找到移除成员按钮 (-)")
-
-        _click(remove_btn)
+        panel = self._open_group_info_panel()
+        self._click_remove_members_entry(panel)
         time.sleep(0.8)
 
         picker = self._wait_picker_window("移出群成员")
@@ -475,6 +527,144 @@ class GroupManagerThread(QThread):
 
         self._click_picker_confirm(picker, self.lc.remove)
         time.sleep(1)
+
+    def _click_remove_members_entry(self, panel):
+        remove_btn = _find_group_action_control(
+            panel, (self.lc.remove, "移出", "移除", "-"), max_depth=14
+        )
+        if remove_btn is not None:
+            _click(remove_btn)
+            return
+
+        member_list = panel.ListControl(AutomationId="chat_member_list", searchDepth=20)
+        if not member_list.Exists(2, 1):
+            raise RuntimeError("未找到成员列表，无法定位移除成员按钮")
+
+        member_cells = []
+        for child in member_list.GetChildren():
+            try:
+                if "ChatMemberCell" in (child.ClassName or ""):
+                    member_cells.append(child)
+            except Exception:
+                continue
+        if not member_cells:
+            raise RuntimeError("成员列表为空，无法推断移除成员按钮")
+
+        rects = []
+        for cell in member_cells:
+            try:
+                rect = cell.BoundingRectangle
+                rects.append((rect.left, rect.top, rect.right, rect.bottom))
+            except Exception:
+                continue
+        if not rects:
+            raise RuntimeError("成员组件缺少位置，无法推断移除成员按钮")
+
+        try:
+            list_rect = member_list.BoundingRectangle
+            list_right = list_rect.right
+        except Exception:
+            list_right = max(rect[2] for rect in rects)
+
+        xs = sorted({rect[0] for rect in rects})
+        ys = sorted({rect[1] for rect in rects})
+        cell_w = rects[0][2] - rects[0][0]
+        cell_h = rects[0][3] - rects[0][1]
+        step_x = (xs[1] - xs[0]) if len(xs) > 1 else cell_w + 16
+        step_y = (ys[1] - ys[0]) if len(ys) > 1 else cell_h
+        cols = max(1, int((list_right - xs[0]) // step_x))
+
+        # 微信 4.1 的加号/移出按钮不暴露为独立 UIA 节点，只出现在成员网格尾部：
+        # 当前成员后第 1 格是“添加”，第 2 格是“移出”。用 chat_member_list 与
+        # ChatMemberCell 的网格位置推断，避免硬编码屏幕绝对坐标。
+        remove_index = len(member_cells) + 1
+        remove_col = remove_index % cols
+        remove_row = remove_index // cols
+        target_x = xs[0] + remove_col * step_x + cell_w // 2
+        target_y = ys[0] + remove_row * step_y + cell_h // 2
+        _click_at(target_x, target_y)
+
+    def _open_group_info_panel(self):
+        panel = auto.Control(ClassName=MEMBER_INFO_CLS, searchDepth=25)
+        if panel.Exists(0, 0):
+            return panel
+
+        chat_info_btn = auto.ButtonControl(Name=self.lc.chat_info, searchDepth=25)
+        if not chat_info_btn.Exists(3, 1):
+            raise RuntimeError("未找到 '聊天信息' 按钮")
+        _click(chat_info_btn)
+        time.sleep(0.8)
+
+        panel = auto.Control(ClassName=MEMBER_INFO_CLS, searchDepth=25)
+        if not panel.Exists(3, 1):
+            raise RuntimeError("未找到群信息侧面板 (ChatRoomMemberInfoView)")
+        return panel
+
+    def _remove_all_members_from_group(self, panel):
+        total_selected = 0
+        max_rounds = 30
+
+        for _round in range(max_rounds):
+            if self._stop_requested:
+                self._log("用户终止操作")
+                return
+
+            self._click_remove_members_entry(panel)
+            time.sleep(0.8)
+
+            picker = self._wait_picker_window("移出群成员")
+            members = _collect_picker_contact_checkboxes(picker)
+            if not members:
+                self._close_picker_window(picker)
+                self._log(f"  -> 没有可继续移出的成员，已累计选择 {total_selected} 个")
+                return
+
+            for member in members:
+                _click(member)
+                time.sleep(0.2)
+
+            total_selected += len(members)
+            self._log(f"  -> 已选择 {len(members)} 个成员，准备移出")
+            self._click_picker_confirm(picker, self.lc.remove)
+            time.sleep(1)
+            panel = self._open_group_info_panel()
+
+        raise RuntimeError("连续移出成员超过 30 轮，疑似成员列表未刷新，已停止")
+
+    def _close_picker_window(self, picker):
+        cancel_btn = picker.ButtonControl(Name="取消", searchDepth=10)
+        if cancel_btn.Exists(1, 1):
+            _click(cancel_btn)
+            time.sleep(0.3)
+        else:
+            auto.SendKeys("{Esc}")
+            time.sleep(0.3)
+
+    def _exit_current_group_from_panel(self, panel):
+        exit_btn = None
+        for _ in range(12):
+            exit_btn = _find_group_action_control(
+                panel, (self.lc.exit_group, "退出群聊", "Exit Group"), max_depth=14
+            )
+            if exit_btn is not None:
+                break
+            _move(panel)
+            auto.WheelDown(waitTime=0.1)
+            time.sleep(0.2)
+
+        if exit_btn is None:
+            raise RuntimeError("未找到 '退出群聊' 按钮")
+
+        _click(exit_btn)
+        time.sleep(1.0)
+
+        confirm_btn = auto.ButtonControl(Name="确定", searchDepth=10)
+        if confirm_btn.Exists(2, 1):
+            _click(confirm_btn)
+            time.sleep(0.5)
+            self._log("  -> 已点击退出确认")
+        else:
+            self._log("  -> 未检测到确认弹窗，可能已退出或需要手动确认")
 
     # ── exit group ───────────────────────────────────────────
 
@@ -513,34 +703,6 @@ class GroupManagerThread(QThread):
         self._search_contact(group_name)
         time.sleep(0.5)
 
-        chat_info_btn = auto.ButtonControl(Name=self.lc.chat_info, searchDepth=25)
-        if not chat_info_btn.Exists(3, 1):
-            raise RuntimeError("未找到 '聊天信息' 按钮")
-        _click(chat_info_btn)
-        time.sleep(0.8)
-
-        panel = auto.Control(ClassName=MEMBER_INFO_CLS, searchDepth=25)
-        if not panel.Exists(3, 1):
-            raise RuntimeError("未找到群信息侧面板 (ChatRoomMemberInfoView)")
-
-        rect = panel.BoundingRectangle
-        panel_cx = (rect.left + rect.right) // 2
-        panel_bottom = rect.bottom
-
-        _move(panel)
-        time.sleep(0.3)
-        for _ in range(15):
-            auto.WheelDown(waitTime=0.1)
-        time.sleep(0.5)
-
-        target_y = panel_bottom - 40
-        _click_at(panel_cx, target_y)
-        time.sleep(1.0)
-
-        confirm_btn = auto.ButtonControl(Name="确定", searchDepth=10)
-        if confirm_btn.Exists(2, 1):
-            _click(confirm_btn)
-            time.sleep(0.5)
-            self._log("  -> 已点击退出确认")
-        else:
-            self._log("  -> 未检测到确认弹窗，可能已退出或需要手动确认")
+        panel = self._open_group_info_panel()
+        self._remove_all_members_from_group(panel)
+        self._exit_current_group_from_panel(panel)

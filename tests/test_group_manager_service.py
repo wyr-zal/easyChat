@@ -14,9 +14,13 @@ class FakeControl:
         self.ClassName = ""
         self.AutomationId = ""
         self.ControlTypeName = ""
+        self.parent = None
 
     def Exists(self, *args, **kwargs):
         return self._exists
+
+    def GetParentControl(self):
+        return self.parent
 
 
 class FakeRect:
@@ -75,9 +79,21 @@ class FakePickerSearchControl(FakeControl):
         self.AutomationId = automation_id
         self.ClassName = class_name
         self.children = children or []
+        for child in self.children:
+            child.parent = self
 
     def GetChildren(self):
         return self.children
+
+    def ListControl(self, **kwargs):
+        automation_id = kwargs.get("AutomationId")
+        for child in self.children:
+            if (
+                child.ControlTypeName == "ListControl"
+                and (not automation_id or child.AutomationId == automation_id)
+            ):
+                return child
+        return FakePickerSearchControl(False)
 
 
 class FakeSearchEdit(FakePickerSearchControl):
@@ -97,6 +113,18 @@ class FakePickerForVisibleResult(FakePickerSearchControl):
 
     def ListControl(self, **_kwargs):
         return self.contact_list
+
+
+class FakeCancelablePicker(FakePickerForVisibleResult):
+    def __init__(self, contact_list, cancel_btn=None):
+        first_child = contact_list.GetChildren()[0] if contact_list.GetChildren() else FakeControl(False)
+        super().__init__(first_child, contact_list=contact_list)
+        self.cancel_btn = cancel_btn or FakeControl(False)
+
+    def ButtonControl(self, **kwargs):
+        if kwargs.get("Name") == "取消":
+            return self.cancel_btn
+        return FakeControl(False)
 
 
 class FakePickerAuto:
@@ -152,6 +180,42 @@ class PickerWindowLocatorTest(unittest.TestCase):
             {"ClassName": service.PICKER_WINDOW_CLS, "searchDepth": 10},
             fake_auto.window_control_calls,
         )
+
+
+class MainSearchLocatorTest(unittest.TestCase):
+    def test_prefers_left_chat_search_over_group_member_panel_search(self):
+        left_search = FakePickerSearchControl(
+            True,
+            name="搜索",
+            control_type="EditControl",
+            class_name="mmui::XValidatorTextEdit",
+        )
+        left_search.BoundingRectangle = FakeRect(1600, 60, 1820, 105)
+        panel_search = FakePickerSearchControl(
+            True,
+            name="搜索",
+            control_type="EditControl",
+            class_name="mmui::XValidatorTextEdit",
+        )
+        panel_search.BoundingRectangle = FakeRect(2450, 160, 2810, 205)
+        panel = FakePickerSearchControl(
+            True,
+            control_type="GroupControl",
+            class_name=service.MEMBER_INFO_CLS,
+            children=[panel_search],
+        )
+        panel.BoundingRectangle = FakeRect(2350, 138, 2850, 1702)
+        win = FakePickerSearchControl(
+            True,
+            control_type="WindowControl",
+            class_name="mmui::MainWindow",
+            children=[left_search, panel],
+        )
+        win.BoundingRectangle = FakeRect(1412, 0, 2850, 1702)
+
+        found = service._find_main_search_box(win, "搜索")
+
+        self.assertIs(found, left_search)
 
 
 class CreateGroupMemberSelectionTest(unittest.TestCase):
@@ -276,6 +340,252 @@ class GroupRenameTest(unittest.TestCase):
         self.assertIn("{Ctrl}v", sent_keys)
         self.assertIn("{Enter}", sent_keys)
         self.assertEqual(click_points[0], (240, 450))
+
+
+class GroupMemberRemoveButtonLocatorTest(unittest.TestCase):
+    def test_finds_remove_button_by_named_descendant_inside_group_info_panel(self):
+        remove_button = FakePickerSearchControl(
+            True,
+            name="移出",
+            control_type="TextControl",
+        )
+        member_list = FakePickerSearchControl(
+            True,
+            name="成员列表",
+            control_type="ListControl",
+            automation_id="chat_member_list",
+            children=[remove_button],
+        )
+        panel = FakePickerSearchControl(
+            True,
+            control_type="GroupControl",
+            class_name=service.MEMBER_INFO_CLS,
+            children=[member_list],
+        )
+
+        found = service._find_group_action_control(panel, ("移出", "-"), max_depth=6)
+
+        self.assertIs(found, remove_button)
+
+    def test_clicks_remove_slot_from_member_grid_when_button_is_not_exposed(self):
+        thread = service.GroupManagerThread(service.GroupManagerThread.MODE_EXIT, [])
+        thread.lc = SimpleNamespace(remove="移出")
+        members = []
+        for idx, name in enumerate(["周安乐", "日乌", "科学-陈老师"]):
+            cell = FakePickerSearchControl(
+                True,
+                name=name,
+                control_type="ListItemControl",
+                class_name="mmui::ChatMemberCell",
+            )
+            cell.BoundingRectangle = FakeRect(
+                left=2420 + idx * 106,
+                top=254,
+                right=2510 + idx * 106,
+                bottom=380,
+            )
+            members.append(cell)
+        member_list = FakePickerSearchControl(
+            True,
+            name="聊天成员",
+            control_type="ListControl",
+            automation_id="chat_member_list",
+            class_name="QFReuseGridWidget",
+            children=members,
+        )
+        member_list.BoundingRectangle = FakeRect(2374, 222, 2874, 1702)
+        panel = FakePickerSearchControl(
+            True,
+            control_type="GroupControl",
+            class_name=service.MEMBER_INFO_CLS,
+            children=[member_list],
+        )
+
+        clicked_controls = []
+        click_points = []
+        with (
+            patch.object(service, "_click", lambda control: clicked_controls.append(control)),
+            patch.object(service, "_click_at", lambda x, y: click_points.append((x, y))),
+        ):
+            service.GroupManagerThread._click_remove_members_entry(thread, panel)
+
+        self.assertEqual(clicked_controls, [])
+        self.assertEqual(click_points, [(2465, 443)])
+
+
+class GroupDeleteFlowTest(unittest.TestCase):
+    def test_exit_group_removes_all_members_before_self_exit(self):
+        thread = service.GroupManagerThread(service.GroupManagerThread.MODE_EXIT, [])
+        panel = FakePickerSearchControl(
+            True,
+            control_type="GroupControl",
+            class_name=service.MEMBER_INFO_CLS,
+        )
+        calls = []
+        thread._search_contact = lambda group_name: calls.append(("search", group_name))
+        thread._open_group_info_panel = lambda: calls.append("open_panel") or panel
+        thread._remove_all_members_from_group = lambda current_panel: calls.append(
+            ("remove_all", current_panel)
+        )
+        thread._exit_current_group_from_panel = lambda current_panel: calls.append(
+            ("exit_self", current_panel)
+        )
+
+        with patch.object(service.time, "sleep", lambda _seconds: None):
+            service.GroupManagerThread._exit_one_group(thread, "项目讨论组")
+
+        self.assertEqual(
+            calls,
+            [
+                ("search", "项目讨论组"),
+                "open_panel",
+                ("remove_all", panel),
+                ("exit_self", panel),
+            ],
+        )
+
+    def test_remove_all_members_clicks_remove_button_selects_all_and_confirms(self):
+        thread = service.GroupManagerThread(service.GroupManagerThread.MODE_EXIT, [])
+        thread.lc = SimpleNamespace(remove="移出")
+        remove_button = FakePickerSearchControl(
+            True,
+            name="移出",
+            control_type="TextControl",
+        )
+        panel = FakePickerSearchControl(
+            True,
+            control_type="GroupControl",
+            class_name=service.MEMBER_INFO_CLS,
+            children=[remove_button],
+        )
+        member_a = FakePickerSearchControl(
+            True, name="日乌", control_type="CheckBoxControl"
+        )
+        member_b = FakePickerSearchControl(
+            True, name="科学-陈老师", control_type="CheckBoxControl"
+        )
+        member_list = FakePickerSearchControl(
+            True,
+            name="请勾选需要移出的群成员",
+            control_type="ListControl",
+            automation_id="sp_to_select_contact_list",
+            children=[member_a, member_b],
+        )
+        picker = FakePickerForVisibleResult(member_a, contact_list=member_list)
+        empty_cancel = FakeControl(True)
+        empty_picker = FakeCancelablePicker(
+            FakePickerSearchControl(True, control_type="ListControl", children=[]),
+            cancel_btn=empty_cancel,
+        )
+        picker_rounds = [picker, empty_picker]
+        clicked = []
+        confirmed = []
+        logs = []
+        thread._wait_picker_window = lambda title: picker_rounds.pop(0)
+        thread._open_group_info_panel = lambda: panel
+        thread._click_picker_confirm = lambda current_picker, button_name: confirmed.append(
+            (current_picker, button_name)
+        )
+        thread._log = logs.append
+
+        with (
+            patch.object(service, "_click", lambda control: clicked.append(control)),
+            patch.object(service.time, "sleep", lambda _seconds: None),
+        ):
+            service.GroupManagerThread._remove_all_members_from_group(thread, panel)
+
+        self.assertEqual(clicked, [remove_button, member_a, member_b, remove_button, empty_cancel])
+        self.assertEqual(confirmed, [(picker, "移出")])
+        self.assertTrue(any("已选择 2 个成员" in msg for msg in logs))
+
+    def test_remove_all_members_loops_until_no_removable_members_left(self):
+        thread = service.GroupManagerThread(service.GroupManagerThread.MODE_EXIT, [])
+        thread.lc = SimpleNamespace(remove="移出")
+        remove_button = FakePickerSearchControl(
+            True,
+            name="移出",
+            control_type="TextControl",
+        )
+        panel = FakePickerSearchControl(
+            True,
+            control_type="GroupControl",
+            class_name=service.MEMBER_INFO_CLS,
+            children=[remove_button],
+        )
+        member_a = FakePickerSearchControl(True, name="日乌", control_type="CheckBoxControl")
+        member_b = FakePickerSearchControl(True, name="科学-陈老师", control_type="CheckBoxControl")
+        member_c = FakePickerSearchControl(True, name="周安乐", control_type="CheckBoxControl")
+        cancel_btn = FakeControl(True)
+        picker_rounds = [
+            FakeCancelablePicker(
+                FakePickerSearchControl(True, control_type="ListControl", children=[member_a, member_b])
+            ),
+            FakeCancelablePicker(
+                FakePickerSearchControl(True, control_type="ListControl", children=[member_c])
+            ),
+            FakeCancelablePicker(
+                FakePickerSearchControl(True, control_type="ListControl", children=[]),
+                cancel_btn=cancel_btn,
+            ),
+        ]
+        wait_calls = []
+
+        def wait_picker(title):
+            wait_calls.append(title)
+            return picker_rounds.pop(0)
+
+        clicked = []
+        confirmed = []
+        logs = []
+        thread._wait_picker_window = wait_picker
+        thread._open_group_info_panel = lambda: panel
+        thread._click_picker_confirm = lambda current_picker, button_name: confirmed.append(
+            (current_picker, button_name)
+        )
+        thread._log = logs.append
+
+        with (
+            patch.object(service, "_click", lambda control: clicked.append(control)),
+            patch.object(service.time, "sleep", lambda _seconds: None),
+        ):
+            service.GroupManagerThread._remove_all_members_from_group(thread, panel)
+
+        self.assertEqual(
+            clicked,
+            [remove_button, member_a, member_b, remove_button, member_c, remove_button, cancel_btn],
+        )
+        self.assertEqual(len(confirmed), 2)
+        self.assertEqual(wait_calls, ["移出群成员", "移出群成员", "移出群成员"])
+        self.assertTrue(any("没有可继续移出的成员" in msg for msg in logs))
+
+    def test_exit_current_group_clicks_exit_group_component_and_confirm(self):
+        thread = service.GroupManagerThread(service.GroupManagerThread.MODE_EXIT, [])
+        thread.lc = SimpleNamespace(exit_group="退出群聊")
+        exit_button = FakePickerSearchControl(
+            True,
+            name="退出群聊",
+            control_type="TextControl",
+        )
+        panel = FakePickerSearchControl(
+            True,
+            control_type="GroupControl",
+            class_name=service.MEMBER_INFO_CLS,
+            children=[exit_button],
+        )
+        confirm_btn = FakeControl(True)
+        clicked = []
+        logs = []
+        thread._log = logs.append
+
+        with (
+            patch.object(service, "_click", lambda control: clicked.append(control)),
+            patch.object(service.auto, "ButtonControl", return_value=confirm_btn),
+            patch.object(service.time, "sleep", lambda _seconds: None),
+        ):
+            service.GroupManagerThread._exit_current_group_from_panel(thread, panel)
+
+        self.assertEqual(clicked, [exit_button, confirm_btn])
+        self.assertTrue(any("已点击退出确认" in msg for msg in logs))
 
 
 class PickerSearchResultClickTest(unittest.TestCase):
