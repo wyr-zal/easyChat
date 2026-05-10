@@ -75,22 +75,27 @@ def _iter_descendants(control, max_depth: int = 12, _depth: int = 0):
 def _find_picker_contact_result(picker, name: str):
     """在发起群聊选人窗口中定位可点击的联系人搜索结果。"""
     candidates = []
-    contact_list = picker.ListControl(
-        AutomationId="sp_to_select_contact_list", searchDepth=20
-    )
-    if contact_list.Exists(0, 0):
-        candidates.extend(contact_list.GetChildren())
-        candidates.extend(_iter_descendants(contact_list, max_depth=8))
+    for automation_id in (
+        "sp_search_new_chat_result_list",
+        "sp_to_select_contact_list",
+    ):
+        contact_list = picker.ListControl(
+            AutomationId=automation_id, searchDepth=20
+        )
+        if contact_list.Exists(0, 0):
+            candidates.extend(contact_list.GetChildren())
+            candidates.extend(_iter_descendants(contact_list, max_depth=8))
     candidates.extend(_iter_descendants(picker, max_depth=12))
 
     fallback_item = None
+    clickable_types = {"CheckBoxControl", "ListItemControl"}
     for item in candidates:
         try:
             control_type = item.ControlTypeName or ""
             item_name = item.Name or ""
         except Exception:
             continue
-        if control_type != "ListItemControl":
+        if control_type not in clickable_types:
             continue
         if item_name and name in item_name:
             return item

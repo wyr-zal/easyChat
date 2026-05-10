@@ -52,10 +52,20 @@ class FakeWindowControl(FakeControl):
 
 
 class FakePickerSearchControl(FakeControl):
-    def __init__(self, exists=True, name="", control_type="", children=None):
+    def __init__(
+        self,
+        exists=True,
+        name="",
+        control_type="",
+        children=None,
+        automation_id="",
+        class_name="",
+    ):
         super().__init__(exists)
         self.Name = name
         self.ControlTypeName = control_type
+        self.AutomationId = automation_id
+        self.ClassName = class_name
         self.children = children or []
 
     def GetChildren(self):
@@ -67,18 +77,18 @@ class FakeSearchEdit(FakePickerSearchControl):
 
 
 class FakePickerForVisibleResult(FakePickerSearchControl):
-    def __init__(self, visible_result):
+    def __init__(self, visible_result, contact_list=None):
         super().__init__(True, name="微信发起群聊", control_type="WindowControl")
         self.search_edit = FakeSearchEdit(True, name="搜索", control_type="EditControl")
         self.visible_result = visible_result
-        self.missing_contact_list = FakePickerSearchControl(False)
+        self.contact_list = contact_list or FakePickerSearchControl(False)
         self.children = [visible_result]
 
     def EditControl(self, **_kwargs):
         return self.search_edit
 
     def ListControl(self, **_kwargs):
-        return self.missing_contact_list
+        return self.contact_list
 
 
 class FakePickerAuto:
@@ -175,6 +185,36 @@ class CreateGroupMemberSelectionTest(unittest.TestCase):
 
 
 class PickerSearchResultClickTest(unittest.TestCase):
+    def test_clicks_search_result_checkbox_from_new_chat_result_list(self):
+        checkbox_result = FakePickerSearchControl(
+            True,
+            name="科学-陈老师",
+            control_type="CheckBoxControl",
+            class_name="mmui::SearchContactCellView",
+        )
+        result_list = FakePickerSearchControl(
+            True,
+            name="请勾选需要添加的联系人",
+            control_type="ListControl",
+            automation_id="sp_search_new_chat_result_list",
+            children=[checkbox_result],
+        )
+        picker = FakePickerForVisibleResult(checkbox_result, contact_list=result_list)
+        clicked = []
+
+        with (
+            patch.object(service, "_click", lambda control: clicked.append(control)),
+            patch.object(service.auto, "SendKeys", lambda _keys: None),
+            patch.object(service.pyperclip, "copy", lambda _text: None),
+            patch.object(service.time, "sleep", lambda _seconds: None),
+        ):
+            thread = SimpleNamespace(lc=SimpleNamespace(search="搜索"))
+            service.GroupManagerThread._picker_search_and_check(
+                thread, picker, "科学-陈老师"
+            )
+
+        self.assertIn(checkbox_result, clicked)
+
     def test_clicks_visible_search_result_when_contact_list_control_is_missing(self):
         visible_result = FakePickerSearchControl(
             True, name="科学-陈老师", control_type="ListItemControl"
