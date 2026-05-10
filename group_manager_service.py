@@ -105,6 +105,16 @@ def _find_picker_contact_result(picker, name: str):
     return fallback_item
 
 
+def _find_descendant_by_name(control, name: str, max_depth: int = 12):
+    for item in _iter_descendants(control, max_depth=max_depth):
+        try:
+            if (item.Name or "") == name:
+                return item
+        except Exception:
+            continue
+    return None
+
+
 class GroupManagerThread(QThread):
     """群聊批量操作执行线程"""
 
@@ -273,7 +283,7 @@ class GroupManagerThread(QThread):
             self._log(f"[{idx+1}/{total}] 创建群聊: {label}  成员: {', '.join(members)}")
 
             try:
-                self._create_one_group(members)
+                self._create_one_group(members, group_name)
                 success += 1
                 task["status"] = "success"
                 self._log(f"  -> 创建成功")
@@ -289,7 +299,7 @@ class GroupManagerThread(QThread):
         self.progress.emit(total, total, "完成")
         return {"total": total, "success": success, "failed": failed, "stopped": self._stop_requested}
 
-    def _create_one_group(self, members: list[str]):
+    def _create_one_group(self, members: list[str], group_name: str = ""):
         if len(members) < 2:
             raise ValueError("创建群聊至少需要2个成员")
 
@@ -333,6 +343,56 @@ class GroupManagerThread(QThread):
 
         self._click_picker_confirm(picker, self.lc.done)
         time.sleep(1)
+
+        group_name = (group_name or "").strip()
+        if group_name:
+            self._rename_current_group(group_name)
+            time.sleep(0.5)
+
+    def _rename_current_group(self, group_name: str):
+        group_name = (group_name or "").strip()
+        if not group_name:
+            return
+
+        self._log(f"  -> 修改群名称: {group_name}")
+        self._open_wechat()
+        time.sleep(0.5)
+
+        chat_info_btn = auto.ButtonControl(Name=self.lc.chat_info, searchDepth=25)
+        if not chat_info_btn.Exists(3, 1):
+            raise RuntimeError("未找到 '聊天信息' 按钮，无法修改群名称")
+        _click(chat_info_btn)
+        time.sleep(0.8)
+
+        panel = auto.Control(ClassName=MEMBER_INFO_CLS, searchDepth=25)
+        if not panel.Exists(3, 1):
+            raise RuntimeError("未找到群信息侧面板，无法修改群名称")
+
+        name_label = _find_descendant_by_name(panel, "群聊名称", max_depth=14)
+        if name_label is not None:
+            rect = name_label.BoundingRectangle
+            target_x = rect.left + 40
+            target_y = rect.bottom + 110
+        else:
+            rect = panel.BoundingRectangle
+            target_x = rect.left + 90
+            target_y = rect.top + 460
+
+        _click_at(target_x, target_y)
+        time.sleep(0.3)
+        auto.SendKeys("{Ctrl}a")
+        pyperclip.copy(group_name)
+        auto.SendKeys("{Ctrl}v")
+        time.sleep(0.2)
+        auto.SendKeys("{Enter}")
+        time.sleep(0.8)
+
+        modify_btn = auto.ButtonControl(Name="修改", searchDepth=15)
+        if not modify_btn.Exists(2, 1):
+            raise RuntimeError("未找到 '修改' 确认按钮，群名称可能未提交")
+        _click(modify_btn)
+        time.sleep(0.5)
+        self._log("  -> 群名称修改完成")
 
     # ── remove members ───────────────────────────────────────
 

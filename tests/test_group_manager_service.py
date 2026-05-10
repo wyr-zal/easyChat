@@ -19,6 +19,14 @@ class FakeControl:
         return self._exists
 
 
+class FakeRect:
+    def __init__(self, left=100, top=100, right=300, bottom=200):
+        self.left = left
+        self.top = top
+        self.right = right
+        self.bottom = bottom
+
+
 class FakeChatMoreMenu(FakeControl):
     def __init__(self, scoped_item):
         super().__init__(True)
@@ -182,6 +190,92 @@ class CreateGroupMemberSelectionTest(unittest.TestCase):
         self.assertEqual(checked_members, ["周安乐", "日乌", "科学-陈老师"])
         self.assertEqual(len(confirmed), 1)
         self.assertTrue(any("跳过成员 '周安乐'" in msg for msg in logs))
+
+    def test_renames_group_after_successful_create_when_group_name_is_set(self):
+        thread = service.GroupManagerThread(service.GroupManagerThread.MODE_CREATE, [])
+        thread.lc = SimpleNamespace(
+            quick_action="快捷操作",
+            initiate_group="发起群聊",
+            done="完成",
+        )
+        thread._log = lambda _msg: None
+        thread._open_wechat = lambda: None
+        thread._wait_picker_window = lambda _title: object()
+        thread._picker_search_and_check = lambda _picker, _member: None
+        thread._click_picker_confirm = lambda _picker, _button_name: None
+        renamed = []
+        thread._rename_current_group = renamed.append
+
+        with (
+            patch.object(service.auto, "ButtonControl", return_value=FakeControl(True)),
+            patch.object(service, "_find_chat_more_menu_item", return_value=FakeControl(True)),
+            patch.object(service, "_click", lambda _control: None),
+            patch.object(service.time, "sleep", lambda _seconds: None),
+        ):
+            service.GroupManagerThread._create_one_group(
+                thread, ["日乌", "科学-陈老师"], "项目讨论组"
+            )
+
+        self.assertEqual(renamed, ["项目讨论组"])
+
+
+class GroupRenameTest(unittest.TestCase):
+    def test_group_rename_uses_chat_info_name_entry_enter_and_modify(self):
+        thread = service.GroupManagerThread(service.GroupManagerThread.MODE_CREATE, [])
+        thread.lc = SimpleNamespace(chat_info="聊天信息")
+        logs = []
+        thread._log = logs.append
+        thread._open_wechat = lambda: object()
+
+        chat_info_btn = FakeControl(True)
+        chat_info_btn.Name = "聊天信息"
+        confirm_btn = FakeControl(True)
+        confirm_btn.Name = "修改"
+
+        label = FakePickerSearchControl(
+            True,
+            name="群聊名称",
+            control_type="TextControl",
+        )
+        label.BoundingRectangle = FakeRect(200, 300, 360, 340)
+        panel = FakePickerSearchControl(
+            True,
+            control_type="GroupControl",
+            class_name=service.MEMBER_INFO_CLS,
+            children=[label],
+        )
+        panel.BoundingRectangle = FakeRect(100, 100, 600, 900)
+
+        clicked = []
+        click_points = []
+        copied = []
+        sent_keys = []
+
+        def button_control(**kwargs):
+            if kwargs.get("Name") == "聊天信息":
+                return chat_info_btn
+            if kwargs.get("Name") == "修改":
+                return confirm_btn
+            return FakeControl(False)
+
+        with (
+            patch.object(service.auto, "ButtonControl", side_effect=button_control),
+            patch.object(service.auto, "Control", return_value=panel),
+            patch.object(service, "_click", lambda control: clicked.append(control)),
+            patch.object(service, "_click_at", lambda x, y: click_points.append((x, y))),
+            patch.object(service.auto, "SendKeys", lambda keys: sent_keys.append(keys)),
+            patch.object(service.pyperclip, "copy", lambda text: copied.append(text)),
+            patch.object(service.time, "sleep", lambda _seconds: None),
+        ):
+            service.GroupManagerThread._rename_current_group(thread, "项目讨论组")
+
+        self.assertIn(chat_info_btn, clicked)
+        self.assertIn(confirm_btn, clicked)
+        self.assertEqual(copied, ["项目讨论组"])
+        self.assertIn("{Ctrl}a", sent_keys)
+        self.assertIn("{Ctrl}v", sent_keys)
+        self.assertIn("{Enter}", sent_keys)
+        self.assertEqual(click_points[0], (240, 450))
 
 
 class PickerSearchResultClickTest(unittest.TestCase):
