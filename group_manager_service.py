@@ -5,6 +5,7 @@
 """
 
 import time
+from ctypes import windll
 
 import pyperclip
 import uiautomation as auto
@@ -30,6 +31,73 @@ def _click_at(x: int, y: int):
 
 PICKER_WINDOW_CLS = "mmui::SessionPickerWindow"
 MEMBER_INFO_CLS = "mmui::ChatRoomMemberInfoView"
+CHAT_MORE_ENTRY_AUTOMATION_ID = "chat_more_entry"
+
+
+def _find_chat_more_menu_item(item_name: str, timeout: float = 2.0):
+    """在“快捷操作”弹出菜单容器内定位菜单项。"""
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        menu = auto.ListControl(
+            AutomationId=CHAT_MORE_ENTRY_AUTOMATION_ID,
+            searchDepth=15,
+        )
+        if menu.Exists(0, 0):
+            item = menu.ListItemControl(Name=item_name, searchDepth=5)
+            if item.Exists(0, 0):
+                return item
+
+        item = auto.ListItemControl(
+            Name=item_name,
+            ClassName="mmui::ChatMoreCellView",
+            searchDepth=15,
+        )
+        if item.Exists(0, 0):
+            return item
+
+        time.sleep(0.1)
+
+    raise RuntimeError(f"未找到 '{item_name}' 菜单项")
+
+
+def _iter_descendants(control, max_depth: int = 12, _depth: int = 0):
+    if _depth > max_depth:
+        return
+    try:
+        children = control.GetChildren()
+    except Exception:
+        return
+    for child in children:
+        yield child
+        yield from _iter_descendants(child, max_depth, _depth + 1)
+
+
+def _find_picker_contact_result(picker, name: str):
+    """在发起群聊选人窗口中定位可点击的联系人搜索结果。"""
+    candidates = []
+    contact_list = picker.ListControl(
+        AutomationId="sp_to_select_contact_list", searchDepth=20
+    )
+    if contact_list.Exists(0, 0):
+        candidates.extend(contact_list.GetChildren())
+        candidates.extend(_iter_descendants(contact_list, max_depth=8))
+    candidates.extend(_iter_descendants(picker, max_depth=12))
+
+    fallback_item = None
+    for item in candidates:
+        try:
+            control_type = item.ControlTypeName or ""
+            item_name = item.Name or ""
+        except Exception:
+            continue
+        if control_type != "ListItemControl":
+            continue
+        if item_name and name in item_name:
+            return item
+        if fallback_item is None and item_name:
+            fallback_item = item
+
+    return fallback_item
 
 
 class GroupManagerThread(QThread):
@@ -90,8 +158,37 @@ class GroupManagerThread(QThread):
             raise RuntimeError("未找到微信窗口，请确保微信已打开并登录")
         return win
 
+    def _is_wechat_visible(self) -> bool:
+        """窗口存在 且 可见 且 未最小化。"""
+        try:
+            win = auto.WindowControl(Depth=1, Name=self.lc.weixin, searchDepth=1)
+            if not win.Exists(0, 0):
+                return False
+            hwnd = win.NativeWindowHandle
+            user32 = windll.user32
+            return bool(user32.IsWindowVisible(hwnd)) and not bool(user32.IsIconic(hwnd))
+        except Exception:
+            return False
+
     def _open_wechat(self):
+        # 不可见或最小化时，先用全局快捷键唤起（对齐 ui_auto_wechat.open_wechat 行为）
+        if not self._is_wechat_visible():
+            try:
+                auto.SendKeys("{Ctrl}{Alt}w")
+            except Exception:
+                pass
+            time.sleep(0.6)
+
         win = self._find_wechat()
+        # 强制还原 + 置顶 + 聚焦，避免被遮挡或最小化
+        try:
+            hwnd = win.NativeWindowHandle
+            user32 = windll.user32
+            if user32.IsIconic(hwnd):
+                user32.ShowWindow(hwnd, 9)  # SW_RESTORE
+            user32.SetForegroundWindow(hwnd)
+        except Exception:
+            pass
         win.SetFocus()
         time.sleep(0.3)
         return win
@@ -114,13 +211,14 @@ class GroupManagerThread(QThread):
     def _wait_picker_window(self, name_contains: str, timeout: float = 5.0) -> auto.WindowControl:
         deadline = time.time() + timeout
         while time.time() < deadline:
-            win = auto.WindowControl(
-                Depth=1,
-                ClassName=PICKER_WINDOW_CLS,
-                searchDepth=1,
+            selectors = (
+                {"Depth": 1, "ClassName": PICKER_WINDOW_CLS, "searchDepth": 1},
+                {"ClassName": PICKER_WINDOW_CLS, "searchDepth": 10},
             )
-            if win.Exists(0, 0) and name_contains in (win.Name or ""):
-                return win
+            for kwargs in selectors:
+                win = auto.WindowControl(**kwargs)
+                if win.Exists(0, 0) and name_contains in (win.Name or ""):
+                    return win
             time.sleep(0.3)
         raise RuntimeError(f"等待窗口 '{name_contains}' 超时")
 
@@ -135,18 +233,11 @@ class GroupManagerThread(QThread):
         auto.SendKeys("{Ctrl}v")
         time.sleep(0.5)
 
-        contact_list = picker.ListControl(
-            AutomationId="sp_to_select_contact_list", searchDepth=10
-        )
-        if not contact_list.Exists(2, 1):
-            raise RuntimeError(f"搜索 '{name}' 后未找到联系人列表")
+        result_item = _find_picker_contact_result(picker, name)
+        if result_item is None:
+            raise RuntimeError(f"搜索 '{name}' 后未找到可点击联系人结果")
 
-        items = contact_list.GetChildren()
-        if not items:
-            raise RuntimeError(f"搜索 '{name}' 无结果")
-
-        first_item = items[0]
-        _click(first_item)
+        _click(result_item)
         time.sleep(0.3)
 
     def _click_picker_confirm(self, picker: auto.WindowControl, button_name: str):
@@ -200,25 +291,40 @@ class GroupManagerThread(QThread):
         self._open_wechat()
         time.sleep(0.3)
 
-        plus_btn = auto.ButtonControl(Name=self.lc.quick_action, Depth=11)
+        plus_btn = auto.ButtonControl(
+            Name=self.lc.quick_action,
+            ClassName="mmui::XButton",
+            searchDepth=20,
+        )
         if not plus_btn.Exists(3, 1):
             raise RuntimeError("未找到 '+' (快捷操作) 按钮")
         _click(plus_btn)
         time.sleep(0.5)
 
-        menu_item = auto.ListItemControl(Name=self.lc.initiate_group, Depth=4)
-        if not menu_item.Exists(2, 1):
-            raise RuntimeError("未找到 '发起群聊' 菜单项")
+        menu_item = _find_chat_more_menu_item(self.lc.initiate_group)
         _click(menu_item)
         time.sleep(0.5)
 
         picker = self._wait_picker_window("发起群聊")
 
+        selected_count = 0
+        skipped_members = []
         for member in members:
             member = member.strip()
             if not member:
                 continue
-            self._picker_search_and_check(picker, member)
+            try:
+                self._picker_search_and_check(picker, member)
+                selected_count += 1
+            except Exception as e:
+                skipped_members.append(member)
+                self._log(f"  -> 跳过成员 '{member}': {e}")
+
+        if selected_count < 2:
+            skipped_text = "、".join(skipped_members) if skipped_members else "无"
+            raise RuntimeError(
+                f"可创建成员不足2个，已选择 {selected_count} 个，跳过: {skipped_text}"
+            )
 
         self._click_picker_confirm(picker, self.lc.done)
         time.sleep(1)
