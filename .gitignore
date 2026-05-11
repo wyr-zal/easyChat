@@ -32,6 +32,7 @@ CONTEXT.md
 wechat_config.json
 excel_sender_config.json
 group_manager_config.json
+remark_manager/remark_manager_config.json
 contacts_*.csv
 filtered_wechat_ids*.txt
 @AutomationLog.txt
