@@ -53,6 +53,17 @@ class RemarkManagerGuiRuntimeTest(unittest.TestCase):
         self.assertEqual(window.task_table.item(0, 0).text(), "科学-陈老师")
         self.assertEqual(window.task_table.item(0, 1).text(), "科学-陈老师-新")
 
+    def test_window_uses_larger_readable_font_scale(self):
+        window = self.create_window()
+
+        self.assertEqual(gui.PRIMARY_FONT_SIZE, 13)
+        self.assertEqual(gui.HELPER_FONT_SIZE, 12)
+        self.assertGreaterEqual(window.font().pointSize(), 13)
+        self.assertGreaterEqual(window.format_hint.font().pointSize(), 12)
+        self.assertGreaterEqual(window.log_text.font().pointSize(), 12)
+        self.assertGreaterEqual(window.task_table.verticalHeader().defaultSectionSize(), 38)
+        self.assertGreaterEqual(window.start_btn.minimumHeight(), 38)
+
 
 if __name__ == "__main__":
     unittest.main()

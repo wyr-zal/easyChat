@@ -12,7 +12,7 @@ from pathlib import Path
 
 import pandas as pd
 from PyQt5.QtCore import Qt
-from PyQt5.QtGui import QTextCursor
+from PyQt5.QtGui import QFont, QTextCursor
 from PyQt5.QtWidgets import (
     QApplication,
     QFileDialog,
@@ -40,6 +40,12 @@ from remark_manager.remark_manager_service import (
 
 
 CONFIG_PATH = Path(__file__).with_name("remark_manager_config.json")
+PRIMARY_FONT_SIZE = 13
+HELPER_FONT_SIZE = 12
+TITLE_FONT_SIZE = 26
+BUTTON_MIN_HEIGHT = 40
+INPUT_MIN_HEIGHT = 36
+TABLE_ROW_HEIGHT = 42
 STATUS_TEXT = {
     "": "待执行",
     "success": "成功",
@@ -63,8 +69,9 @@ class RemarkManagerGUI(QWidget):
         self.thread: RemarkManagerThread | None = None
 
         self.setWindowTitle("EasyChat 备注批量修改")
-        self.resize(980, 720)
-        self.setMinimumSize(860, 620)
+        self.resize(1080, 780)
+        self.setMinimumSize(920, 680)
+        self._apply_base_font()
         self._build_ui()
         self._apply_config_to_ui()
 
@@ -99,17 +106,59 @@ class RemarkManagerGUI(QWidget):
 
     # ── UI ──────────────────────────────────────────────────
 
+    def _apply_base_font(self):
+        font = QFont(self.font())
+        font.setPointSize(PRIMARY_FONT_SIZE)
+        self.setFont(font)
+        self.setStyleSheet(
+            f"""
+            QWidget {{
+                font-size: {PRIMARY_FONT_SIZE}pt;
+            }}
+            QGroupBox {{
+                font-size: {PRIMARY_FONT_SIZE}pt;
+                font-weight: 600;
+                padding-top: 14px;
+            }}
+            QPushButton {{
+                min-height: {BUTTON_MIN_HEIGHT}px;
+                padding: 6px 14px;
+            }}
+            QLineEdit, QComboBox, QSpinBox {{
+                min-height: {INPUT_MIN_HEIGHT}px;
+                padding: 4px 8px;
+            }}
+            QHeaderView::section {{
+                font-size: {PRIMARY_FONT_SIZE}pt;
+                min-height: 34px;
+                padding: 6px;
+            }}
+            """
+        )
+
+    def _font(self, point_size: int, bold: bool = False) -> QFont:
+        font = QFont(self.font())
+        font.setPointSize(point_size)
+        font.setBold(bold)
+        return font
+
+    def _apply_button_size(self, *buttons: QPushButton):
+        for button in buttons:
+            button.setMinimumHeight(BUTTON_MIN_HEIGHT)
+
     def _build_ui(self):
         root = QVBoxLayout(self)
         root.setContentsMargins(18, 18, 18, 18)
         root.setSpacing(12)
 
         title = QLabel("备注批量修改")
-        title.setStyleSheet("font-size: 22px; font-weight: 700; color: #111827;")
+        title.setFont(self._font(TITLE_FONT_SIZE, bold=True))
+        title.setStyleSheet("color: #111827;")
         root.addWidget(title)
 
         desc = QLabel("导入 Excel/CSV：第 1 列为原始名，第 2 列为要修改成的新备注。")
-        desc.setStyleSheet("color: #6B7280; font-size: 12px;")
+        desc.setFont(self._font(HELPER_FONT_SIZE))
+        desc.setStyleSheet("color: #6B7280;")
         root.addWidget(desc)
 
         import_box = QGroupBox("1. 导入数据")
@@ -119,7 +168,9 @@ class RemarkManagerGUI(QWidget):
         path_row = QHBoxLayout()
         self.path_input = QLineEdit()
         self.path_input.setPlaceholderText("选择或拖入 Excel / CSV 文件")
+        self.path_input.setMinimumHeight(INPUT_MIN_HEIGHT)
         choose_btn = QPushButton("选择文件")
+        self._apply_button_size(choose_btn)
         choose_btn.clicked.connect(self._select_excel)
         path_row.addWidget(QLabel("文件:"))
         path_row.addWidget(self.path_input, 1)
@@ -129,9 +180,12 @@ class RemarkManagerGUI(QWidget):
         col_row = QHBoxLayout()
         self.original_col_input = QLineEdit("原始名")
         self.original_col_input.setMaximumWidth(160)
+        self.original_col_input.setMinimumHeight(INPUT_MIN_HEIGHT)
         self.remark_col_input = QLineEdit("新备注")
         self.remark_col_input.setMaximumWidth(160)
+        self.remark_col_input.setMinimumHeight(INPUT_MIN_HEIGHT)
         load_btn = QPushButton("导入数据")
+        self._apply_button_size(load_btn)
         load_btn.clicked.connect(self._load_excel)
         col_row.addWidget(QLabel("原始名列:"))
         col_row.addWidget(self.original_col_input)
@@ -144,7 +198,8 @@ class RemarkManagerGUI(QWidget):
         self.format_hint = QLabel(
             "Excel 格式：原始名 / 新备注。若未找到这两个列名，将自动按前两列读取。"
         )
-        self.format_hint.setStyleSheet("color: #6B7280; font-size: 12px;")
+        self.format_hint.setFont(self._font(HELPER_FONT_SIZE))
+        self.format_hint.setStyleSheet("color: #6B7280;")
         import_layout.addWidget(self.format_hint)
         root.addWidget(import_box)
 
@@ -156,13 +211,16 @@ class RemarkManagerGUI(QWidget):
         self.interval_spin = QSpinBox()
         self.interval_spin.setRange(1, 60)
         self.interval_spin.setSuffix(" 秒")
+        self.interval_spin.setMinimumHeight(INPUT_MIN_HEIGHT)
         self.language_combo = QComboBox()
         self.language_combo.addItems(["zh-CN", "zh-TW", "en-US"])
+        self.language_combo.setMinimumHeight(INPUT_MIN_HEIGHT)
         self.start_btn = QPushButton("开始修改")
         self.start_btn.clicked.connect(self._start_tasks)
         self.stop_btn = QPushButton("停止")
         self.stop_btn.setEnabled(False)
         self.stop_btn.clicked.connect(self._stop_task)
+        self._apply_button_size(self.start_btn, self.stop_btn)
 
         settings_layout.addWidget(QLabel("每条间隔:"), 0, 0)
         settings_layout.addWidget(self.interval_spin, 0, 1)
@@ -179,10 +237,13 @@ class RemarkManagerGUI(QWidget):
         self.task_table.horizontalHeader().setSectionResizeMode(1, QHeaderView.Stretch)
         self.task_table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeToContents)
         self.task_table.verticalHeader().setVisible(False)
+        self.task_table.verticalHeader().setDefaultSectionSize(TABLE_ROW_HEIGHT)
+        self.task_table.setFont(self._font(PRIMARY_FONT_SIZE))
         self.task_table.setAlternatingRowColors(True)
         root.addWidget(self.task_table, 1)
 
         self.progress_label = QLabel("进度: 0/0")
+        self.progress_label.setFont(self._font(PRIMARY_FONT_SIZE))
         self.progress_label.setStyleSheet("color: #374151;")
         root.addWidget(self.progress_label)
 
@@ -190,6 +251,7 @@ class RemarkManagerGUI(QWidget):
         log_layout = QVBoxLayout(log_box)
         self.log_text = QTextEdit()
         self.log_text.setReadOnly(True)
+        self.log_text.setFont(self._font(HELPER_FONT_SIZE))
         self.log_text.setMinimumHeight(140)
         log_layout.addWidget(self.log_text)
         root.addWidget(log_box)
