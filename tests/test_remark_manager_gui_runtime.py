@@ -64,6 +64,14 @@ class RemarkManagerGuiRuntimeTest(unittest.TestCase):
         self.assertGreaterEqual(window.task_table.verticalHeader().defaultSectionSize(), 38)
         self.assertGreaterEqual(window.start_btn.minimumHeight(), 38)
 
+    def test_startup_window_size_is_original_scale_1_2x(self):
+        window = self.create_window()
+
+        self.assertEqual(gui.STARTUP_WIDTH, 1176)
+        self.assertEqual(gui.STARTUP_HEIGHT, 864)
+        self.assertEqual(window.width(), 1176)
+        self.assertEqual(window.height(), 864)
+
 
 if __name__ == "__main__":
     unittest.main()

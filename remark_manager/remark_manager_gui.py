@@ -43,6 +43,13 @@ CONFIG_PATH = Path(__file__).with_name("remark_manager_config.json")
 PRIMARY_FONT_SIZE = 13
 HELPER_FONT_SIZE = 12
 TITLE_FONT_SIZE = 26
+ORIGINAL_STARTUP_WIDTH = 980
+ORIGINAL_STARTUP_HEIGHT = 720
+STARTUP_SCALE = 1.2
+STARTUP_WIDTH = int(ORIGINAL_STARTUP_WIDTH * STARTUP_SCALE)
+STARTUP_HEIGHT = int(ORIGINAL_STARTUP_HEIGHT * STARTUP_SCALE)
+MINIMUM_WIDTH = int(860 * STARTUP_SCALE)
+MINIMUM_HEIGHT = int(620 * STARTUP_SCALE)
 BUTTON_MIN_HEIGHT = 40
 INPUT_MIN_HEIGHT = 36
 TABLE_ROW_HEIGHT = 42
@@ -69,8 +76,8 @@ class RemarkManagerGUI(QWidget):
         self.thread: RemarkManagerThread | None = None
 
         self.setWindowTitle("EasyChat 备注批量修改")
-        self.resize(1080, 780)
-        self.setMinimumSize(920, 680)
+        self.resize(STARTUP_WIDTH, STARTUP_HEIGHT)
+        self.setMinimumSize(MINIMUM_WIDTH, MINIMUM_HEIGHT)
         self._apply_base_font()
         self._build_ui()
         self._apply_config_to_ui()

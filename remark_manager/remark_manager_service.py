@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import time
 from ctypes import windll
+from enum import Enum
 from pathlib import Path
 from typing import Iterable
 
@@ -22,6 +23,16 @@ from wechat_locale import WeChatLocale
 
 
 MEMBER_INFO_CLS = "mmui::ChatRoomMemberInfoView"
+SINGLE_CHAT_INFO_AUTOMATION_ID = "single_chat_info_view"
+SINGLE_CHAT_MEMBER_AUTOMATION_ID = "single_chat_member_cell"
+PERSONAL_INFO_LANDMARKS = (
+    "查找聊天内容",
+    "消息免打扰",
+    "置顶聊天",
+    "Search Chat History",
+    "Mute Notifications",
+    "Sticky on Top",
+)
 CONTACT_PROFILE_CLASS_CANDIDATES = (
     "mmui::ContactProfileView",
     "mmui::ContactProfileWnd",
@@ -29,6 +40,11 @@ CONTACT_PROFILE_CLASS_CANDIDATES = (
     "mmui::ContactCardView",
     "mmui::ProfileDialog",
 )
+
+
+class ChatInfoPanelState(Enum):
+    OPEN = "open"
+    CLOSED = "closed"
 
 
 def _click(element):
@@ -94,6 +110,100 @@ def _find_descendant_by_name(control, name: str, max_depth: int = 12):
         except Exception:
             continue
     return None
+
+
+def _control_exists(control) -> bool:
+    try:
+        return bool(control is not None and control.Exists(0, 0))
+    except Exception:
+        return False
+
+
+def _count_descendant_names(control, names: tuple[str, ...], max_depth: int = 8) -> int:
+    count = 0
+    wanted = {name for name in names if name}
+    for item in _iter_descendants(control, max_depth=max_depth):
+        try:
+            item_name = (item.Name or "").strip()
+        except Exception:
+            continue
+        if item_name in wanted:
+            count += 1
+    return count
+
+
+def _find_personal_info_panel_by_landmarks(win):
+    """按单聊信息侧栏的稳定文案定位侧栏。
+
+    单聊侧栏与群聊侧栏的 ClassName 可能不同；但当前界面通常包含
+    “查找聊天内容 / 消息免打扰 / 置顶聊天”等文案。用这些 landmark
+    找到右侧最像侧栏的容器，避免把单聊也写死成群聊组件。
+    """
+    candidates = []
+    for index, item in enumerate([win, *_iter_descendants(win, max_depth=14)]):
+        try:
+            rect = item.BoundingRectangle
+            width = max(1, rect.right - rect.left)
+            height = max(1, rect.bottom - rect.top)
+            area = width * height
+            score = _count_descendant_names(item, PERSONAL_INFO_LANDMARKS, max_depth=8)
+        except Exception:
+            continue
+        if score >= 2:
+            candidates.append((score, rect.left, area, index, item))
+
+    if not candidates:
+        return None
+    candidates.sort(key=lambda candidate: (-candidate[1], candidate[2], -candidate[0], candidate[3]))
+    return candidates[0][4]
+
+
+def _find_chat_info_panel(win):
+    """兼容群聊侧栏和个人联系人侧栏。"""
+    try:
+        panel = win.Control(AutomationId=SINGLE_CHAT_INFO_AUTOMATION_ID, searchDepth=25)
+        if _control_exists(panel):
+            return panel
+    except Exception:
+        pass
+
+    panel = auto.Control(AutomationId=SINGLE_CHAT_INFO_AUTOMATION_ID, searchDepth=25)
+    if _control_exists(panel):
+        return panel
+
+    try:
+        panel = win.Control(ClassName=MEMBER_INFO_CLS, searchDepth=25)
+        if _control_exists(panel):
+            return panel
+    except Exception:
+        pass
+
+    panel = auto.Control(ClassName=MEMBER_INFO_CLS, searchDepth=25)
+    if _control_exists(panel):
+        return panel
+
+    return _find_personal_info_panel_by_landmarks(win)
+
+
+def _find_chat_info_button(win, button_name: str):
+    try:
+        btn = win.ButtonControl(Name=button_name, searchDepth=25)
+        if _control_exists(btn):
+            return btn
+    except Exception:
+        pass
+
+    btn = auto.ButtonControl(Name=button_name, searchDepth=25)
+    if _control_exists(btn):
+        return btn
+    return None
+
+
+def _get_chat_info_panel_state(win) -> tuple[ChatInfoPanelState, object | None]:
+    panel = _find_chat_info_panel(win)
+    if panel is not None:
+        return ChatInfoPanelState.OPEN, panel
+    return ChatInfoPanelState.CLOSED, None
 
 
 def _control_center(control) -> tuple[int, int]:
@@ -315,32 +425,60 @@ class RemarkManagerThread(QThread):
         time.sleep(0.4)
 
     def _open_chat_info_panel(self):
-        panel = auto.Control(ClassName=MEMBER_INFO_CLS, searchDepth=25)
-        if panel.Exists(0, 0):
+        win = self._open_wechat()
+        state, panel = _get_chat_info_panel_state(win)
+        if state is ChatInfoPanelState.OPEN:
+            self._log("  -> 聊天信息侧栏已打开，进入下一步")
             return panel
 
-        chat_info_btn = auto.ButtonControl(Name=self.lc.chat_info, searchDepth=25)
-        if not chat_info_btn.Exists(3, 1):
+        self._log("  -> 聊天信息侧栏未打开，准备点击聊天信息/三个点")
+        chat_info_btn = _find_chat_info_button(win, self.lc.chat_info)
+        if chat_info_btn is None:
             raise RuntimeError("未找到 '聊天信息' / 三个点按钮")
+        self._log("  -> 点击聊天信息/三个点")
         _click(chat_info_btn)
-        time.sleep(0.8)
 
-        panel = auto.Control(ClassName=MEMBER_INFO_CLS, searchDepth=25)
-        if panel.Exists(3, 1):
-            return panel
+        for _ in range(10):
+            time.sleep(0.2)
+            # 点击三点后重新获取窗口控件树，避免复用点击前的缓存状态。
+            win = self._open_wechat()
+            state, panel = _get_chat_info_panel_state(win)
+            if state is ChatInfoPanelState.OPEN:
+                self._log("  -> 已打开聊天信息侧栏")
+                return panel
         raise RuntimeError("未找到聊天信息侧栏")
 
     def _open_contact_profile_from_panel(self, panel):
         entry = self._find_profile_entry_in_panel(panel)
-        if entry is not None:
-            _click(entry)
-        else:
-            rect = panel.BoundingRectangle
-            _click_at(rect.left + 62, rect.top + 72)
+        if entry is None:
+            self._log("  -> 未识别到联系人头像组件，已停止本条任务")
+            raise RuntimeError("未识别到联系人头像组件")
+
+        self._log("  -> 准备点击联系人头像")
+        _click(entry)
         time.sleep(0.8)
+        self._log("  -> 已点击联系人头像，等待资料卡")
         return self._wait_contact_profile()
 
     def _find_profile_entry_in_panel(self, panel):
+        try:
+            member_cell = panel.ButtonControl(
+                AutomationId=SINGLE_CHAT_MEMBER_AUTOMATION_ID, searchDepth=12
+            )
+            if _control_exists(member_cell):
+                return member_cell
+        except Exception:
+            pass
+
+        try:
+            member_cell = panel.Control(
+                AutomationId=SINGLE_CHAT_MEMBER_AUTOMATION_ID, searchDepth=12
+            )
+            if _control_exists(member_cell):
+                return member_cell
+        except Exception:
+            pass
+
         member_list = panel.ListControl(AutomationId="chat_member_list", searchDepth=20)
         candidates: Iterable = []
         if member_list.Exists(0, 0):
@@ -348,22 +486,42 @@ class RemarkManagerThread(QThread):
                 candidates = member_list.GetChildren()
             except Exception:
                 candidates = []
+        try:
+            panel_rect = panel.BoundingRectangle
+            top_limit = panel_rect.top + 220
+        except Exception:
+            top_limit = None
+
+        top_entries = []
+        add_names = {"添加", "Add", "+", "新增"}
         for item in list(candidates) + list(_iter_descendants(panel, max_depth=10)):
             try:
                 class_name = item.ClassName or ""
                 control_type = item.ControlTypeName or ""
                 rect = item.BoundingRectangle
+                item_name = (item.Name or "").strip()
             except Exception:
                 continue
             if "ChatMemberCell" in class_name:
-                return item
+                top_entries.append((100, rect.left, rect.top, item))
+                continue
             if control_type in {"ButtonControl", "ImageControl", "ListItemControl"}:
-                try:
-                    panel_rect = panel.BoundingRectangle
-                    if rect.top < panel_rect.top + 180:
-                        return item
-                except Exception:
+                if top_limit is not None and rect.top >= top_limit:
                     continue
+                score = {
+                    "ImageControl": 90,
+                    "ListItemControl": 80,
+                    "ButtonControl": 60,
+                }.get(control_type, 0)
+                if item_name in add_names:
+                    score -= 100
+                top_entries.append((score, rect.left, rect.top, item))
+
+        if top_entries:
+            top_entries.sort(key=lambda entry: (-entry[0], entry[1], entry[2]))
+            best = top_entries[0]
+            if best[0] > 0:
+                return best[3]
         return None
 
     def _wait_contact_profile(self, timeout: float = 4.0):
@@ -448,4 +606,3 @@ class RemarkManagerThread(QThread):
             "failed": failed,
             "stopped": self._stop_requested,
         }
-

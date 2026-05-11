@@ -57,5 +57,9 @@ docs/.omx/
 
 # Local captures
 Snipaste_*.png
+tmp_wechat_*.png
+
+# Local sample/import files
+remark_manager/*.xlsx
 
 .omx/
