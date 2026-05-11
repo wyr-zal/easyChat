@@ -123,17 +123,32 @@ def _collect_picker_contact_checkboxes(picker):
     result = []
     seen = set()
     for item in candidates:
-        marker = id(item)
-        if marker in seen:
-            continue
-        seen.add(marker)
         try:
             control_type = item.ControlTypeName or ""
             item_name = (item.Name or "").strip()
         except Exception:
             continue
-        if control_type in {"CheckBoxControl", "ListItemControl"} and item_name:
-            result.append(item)
+
+        if control_type not in {"CheckBoxControl", "ListItemControl"} or not item_name:
+            continue
+
+        try:
+            rect = item.BoundingRectangle
+            marker = (
+                control_type,
+                item_name,
+                rect.left,
+                rect.top,
+                rect.right,
+                rect.bottom,
+            )
+        except Exception:
+            marker = (control_type, item_name)
+
+        if marker in seen:
+            continue
+        seen.add(marker)
+        result.append(item)
     return result
 
 
@@ -192,6 +207,41 @@ def _find_group_action_control(control, names: tuple[str, ...], max_depth: int =
         if item_name in normalized_names:
             return item
     return None
+
+
+def _collect_group_member_cells(panel):
+    member_list = panel.ListControl(AutomationId="chat_member_list", searchDepth=20)
+    if not member_list.Exists(0, 0):
+        return []
+
+    cells = []
+    for child in member_list.GetChildren():
+        try:
+            if "ChatMemberCell" in (child.ClassName or ""):
+                cells.append(child)
+        except Exception:
+            continue
+    return cells
+
+
+def _click_group_info_bottom_exit_slot(panel):
+    """点击群信息侧栏底部的退出群聊位置。
+
+    微信 4.1 的“退出群聊”在部分环境下只绘制为红色文字，不暴露 Name
+    可查的 UIA 控件。这里仍以 ChatRoomMemberInfoView 的矩形作为锚点，
+    避免使用屏幕绝对坐标。
+    """
+    try:
+        rect = panel.BoundingRectangle
+        left, top, right, bottom = rect.left, rect.top, rect.right, rect.bottom
+    except Exception as e:
+        raise RuntimeError("群信息侧面板缺少位置，无法定位 '退出群聊'") from e
+
+    target_x = (left + right) // 2
+    target_y = bottom - 80
+    if target_y <= top:
+        target_y = top + max(1, (bottom - top) // 2)
+    _click_at(target_x, target_y)
 
 
 class GroupManagerThread(QThread):
@@ -540,13 +590,7 @@ class GroupManagerThread(QThread):
         if not member_list.Exists(2, 1):
             raise RuntimeError("未找到成员列表，无法定位移除成员按钮")
 
-        member_cells = []
-        for child in member_list.GetChildren():
-            try:
-                if "ChatMemberCell" in (child.ClassName or ""):
-                    member_cells.append(child)
-            except Exception:
-                continue
+        member_cells = _collect_group_member_cells(panel)
         if not member_cells:
             raise RuntimeError("成员列表为空，无法推断移除成员按钮")
 
@@ -609,6 +653,13 @@ class GroupManagerThread(QThread):
                 self._log("用户终止操作")
                 return
 
+            member_list = panel.ListControl(AutomationId="chat_member_list", searchDepth=20)
+            if member_list.Exists(0, 0):
+                member_cells = _collect_group_member_cells(panel)
+                if len(member_cells) <= 1:
+                    self._log("  -> 群内只剩自己，无需继续移出成员")
+                    return
+
             self._click_remove_members_entry(panel)
             time.sleep(0.8)
 
@@ -653,9 +704,10 @@ class GroupManagerThread(QThread):
             time.sleep(0.2)
 
         if exit_btn is None:
-            raise RuntimeError("未找到 '退出群聊' 按钮")
-
-        _click(exit_btn)
+            self._log("  -> 未找到 '退出群聊' 组件，改用群信息侧栏底部位置")
+            _click_group_info_bottom_exit_slot(panel)
+        else:
+            _click(exit_btn)
         time.sleep(1.0)
 
         confirm_btn = auto.ButtonControl(Name="确定", searchDepth=10)
@@ -705,4 +757,5 @@ class GroupManagerThread(QThread):
 
         panel = self._open_group_info_panel()
         self._remove_all_members_from_group(panel)
+        panel = self._open_group_info_panel()
         self._exit_current_group_from_panel(panel)

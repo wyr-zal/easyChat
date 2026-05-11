@@ -416,14 +416,20 @@ class GroupMemberRemoveButtonLocatorTest(unittest.TestCase):
 class GroupDeleteFlowTest(unittest.TestCase):
     def test_exit_group_removes_all_members_before_self_exit(self):
         thread = service.GroupManagerThread(service.GroupManagerThread.MODE_EXIT, [])
-        panel = FakePickerSearchControl(
+        first_panel = FakePickerSearchControl(
+            True,
+            control_type="GroupControl",
+            class_name=service.MEMBER_INFO_CLS,
+        )
+        refreshed_panel = FakePickerSearchControl(
             True,
             control_type="GroupControl",
             class_name=service.MEMBER_INFO_CLS,
         )
         calls = []
         thread._search_contact = lambda group_name: calls.append(("search", group_name))
-        thread._open_group_info_panel = lambda: calls.append("open_panel") or panel
+        panels = [first_panel, refreshed_panel]
+        thread._open_group_info_panel = lambda: calls.append("open_panel") or panels.pop(0)
         thread._remove_all_members_from_group = lambda current_panel: calls.append(
             ("remove_all", current_panel)
         )
@@ -439,8 +445,9 @@ class GroupDeleteFlowTest(unittest.TestCase):
             [
                 ("search", "项目讨论组"),
                 "open_panel",
-                ("remove_all", panel),
-                ("exit_self", panel),
+                ("remove_all", first_panel),
+                "open_panel",
+                ("exit_self", refreshed_panel),
             ],
         )
 
@@ -558,6 +565,44 @@ class GroupDeleteFlowTest(unittest.TestCase):
         self.assertEqual(wait_calls, ["移出群成员", "移出群成员", "移出群成员"])
         self.assertTrue(any("没有可继续移出的成员" in msg for msg in logs))
 
+    def test_remove_all_members_stops_when_only_self_member_left(self):
+        thread = service.GroupManagerThread(service.GroupManagerThread.MODE_EXIT, [])
+        thread.lc = SimpleNamespace(remove="移出")
+        self_member = FakePickerSearchControl(
+            True,
+            name="周安乐",
+            control_type="ListItemControl",
+            class_name="mmui::ChatMemberCell",
+        )
+        member_list = FakePickerSearchControl(
+            True,
+            name="聊天成员",
+            control_type="ListControl",
+            automation_id="chat_member_list",
+            class_name="QFReuseGridWidget",
+            children=[self_member],
+        )
+        panel = FakePickerSearchControl(
+            True,
+            control_type="GroupControl",
+            class_name=service.MEMBER_INFO_CLS,
+            children=[member_list],
+        )
+        clicked = []
+        logs = []
+        thread._log = logs.append
+        thread._wait_picker_window = lambda _title: self.fail("不应再等待移出群成员窗口")
+
+        with (
+            patch.object(service, "_click", lambda control: clicked.append(control)),
+            patch.object(service, "_click_at", lambda x, y: clicked.append((x, y))),
+            patch.object(service.time, "sleep", lambda _seconds: None),
+        ):
+            service.GroupManagerThread._remove_all_members_from_group(thread, panel)
+
+        self.assertEqual(clicked, [])
+        self.assertTrue(any("只剩自己" in msg for msg in logs))
+
     def test_exit_current_group_clicks_exit_group_component_and_confirm(self):
         thread = service.GroupManagerThread(service.GroupManagerThread.MODE_EXIT, [])
         thread.lc = SimpleNamespace(exit_group="退出群聊")
@@ -587,8 +632,63 @@ class GroupDeleteFlowTest(unittest.TestCase):
         self.assertEqual(clicked, [exit_button, confirm_btn])
         self.assertTrue(any("已点击退出确认" in msg for msg in logs))
 
+    def test_exit_current_group_uses_sidebar_anchor_when_exit_component_is_hidden(self):
+        thread = service.GroupManagerThread(service.GroupManagerThread.MODE_EXIT, [])
+        thread.lc = SimpleNamespace(exit_group="退出群聊")
+        panel = FakePickerSearchControl(
+            True,
+            control_type="GroupControl",
+            class_name=service.MEMBER_INFO_CLS,
+        )
+        panel.BoundingRectangle = FakeRect(100, 200, 500, 1000)
+        confirm_btn = FakeControl(False)
+        moved = []
+        wheel_down_calls = []
+        click_points = []
+        logs = []
+        thread._log = logs.append
+
+        with (
+            patch.object(service, "_move", lambda control: moved.append(control)),
+            patch.object(service, "_click_at", lambda x, y: click_points.append((x, y))),
+            patch.object(service.auto, "WheelDown", lambda **_kwargs: wheel_down_calls.append(True)),
+            patch.object(service.auto, "ButtonControl", return_value=confirm_btn),
+            patch.object(service.time, "sleep", lambda _seconds: None),
+        ):
+            service.GroupManagerThread._exit_current_group_from_panel(thread, panel)
+
+        self.assertEqual(click_points, [(300, 920)])
+        self.assertEqual(len(wheel_down_calls), 12)
+        self.assertTrue(any("侧栏底部位置" in msg for msg in logs))
+
 
 class PickerSearchResultClickTest(unittest.TestCase):
+    def test_deduplicates_picker_member_checkboxes_by_name_and_rect(self):
+        controls = []
+        for _ in range(3):
+            member_a = FakePickerSearchControl(
+                True, name="日乌", control_type="CheckBoxControl"
+            )
+            member_a.BoundingRectangle = FakeRect(1120, 110, 1180, 170)
+            member_b = FakePickerSearchControl(
+                True, name="科学-陈老师", control_type="CheckBoxControl"
+            )
+            member_b.BoundingRectangle = FakeRect(1120, 200, 1180, 260)
+            controls.extend([member_a, member_b])
+
+        member_list = FakePickerSearchControl(
+            True,
+            name="请勾选需要移出的群成员",
+            control_type="ListControl",
+            automation_id="sp_to_select_contact_list",
+            children=controls,
+        )
+        picker = FakePickerForVisibleResult(controls[0], contact_list=member_list)
+
+        members = service._collect_picker_contact_checkboxes(picker)
+
+        self.assertEqual([member.Name for member in members], ["日乌", "科学-陈老师"])
+
     def test_clicks_search_result_checkbox_from_new_chat_result_list(self):
         checkbox_result = FakePickerSearchControl(
             True,
