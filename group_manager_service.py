@@ -6,6 +6,7 @@
 
 import time
 from ctypes import windll
+from enum import Enum
 
 import pyperclip
 import uiautomation as auto
@@ -32,6 +33,17 @@ def _click_at(x: int, y: int):
 PICKER_WINDOW_CLS = "mmui::SessionPickerWindow"
 MEMBER_INFO_CLS = "mmui::ChatRoomMemberInfoView"
 CHAT_MORE_ENTRY_AUTOMATION_ID = "chat_more_entry"
+EXIT_CONFIRM_NAMES = ("确定", "确认")
+
+
+class GroupExitState(Enum):
+    SEARCH_GROUP = "搜索目标群"
+    OPEN_INFO_PANEL = "打开群信息侧栏"
+    REMOVE_MEMBERS = "移除可移出成员"
+    REFRESH_INFO_PANEL = "刷新群信息侧栏"
+    CLICK_EXIT = "点击退出群聊"
+    CONFIRM_EXIT = "确认退出"
+    DONE = "退出完成"
 
 
 def _find_chat_more_menu_item(item_name: str, timeout: float = 2.0):
@@ -224,7 +236,25 @@ def _collect_group_member_cells(panel):
     return cells
 
 
-def _click_group_info_bottom_exit_slot(panel):
+def _is_group_info_panel_ready(panel) -> bool:
+    try:
+        if not panel.Exists(0, 0):
+            return False
+    except Exception:
+        return False
+
+    try:
+        member_list = panel.ListControl(AutomationId="chat_member_list", searchDepth=20)
+        if member_list.Exists(0, 0):
+            return True
+    except Exception:
+        pass
+
+    ready_markers = ("群聊名称", "群公告", "备注", "查找聊天内容", "退出群聊", "清空聊天记录")
+    return _find_group_action_control(panel, ready_markers, max_depth=20) is not None
+
+
+def _click_group_info_bottom_exit_slot(panel, bottom_offset: int = 120):
     """点击群信息侧栏底部的退出群聊位置。
 
     微信 4.1 的“退出群聊”在部分环境下只绘制为红色文字，不暴露 Name
@@ -238,7 +268,7 @@ def _click_group_info_bottom_exit_slot(panel):
         raise RuntimeError("群信息侧面板缺少位置，无法定位 '退出群聊'") from e
 
     target_x = (left + right) // 2
-    target_y = bottom - 80
+    target_y = bottom - bottom_offset
     if target_y <= top:
         target_y = top + max(1, (bottom - top) // 2)
     _click_at(target_x, target_y)
@@ -295,6 +325,13 @@ class GroupManagerThread(QThread):
 
     def _log(self, msg: str):
         self.log.emit(msg)
+
+    def _enter_exit_state(self, state: GroupExitState, condition: str):
+        self._log(f"  -> 状态机[{state.value}]: {condition}")
+
+    def _ensure_group_info_panel_ready(self, panel, state: GroupExitState):
+        if not _is_group_info_panel_ready(panel):
+            raise RuntimeError(f"状态机阻塞[{state.value}]: 群信息侧栏未就绪")
 
     def _find_wechat(self):
         win = auto.WindowControl(Depth=1, Name=self.lc.weixin, searchDepth=1)
@@ -629,20 +666,25 @@ class GroupManagerThread(QThread):
         _click_at(target_x, target_y)
 
     def _open_group_info_panel(self):
-        panel = auto.Control(ClassName=MEMBER_INFO_CLS, searchDepth=25)
-        if panel.Exists(0, 0):
-            return panel
+        win = self._find_wechat()
+        last_panel = None
+        for _attempt in range(3):
+            panel = win.Control(ClassName=MEMBER_INFO_CLS, searchDepth=35)
+            if panel.Exists(0, 0):
+                last_panel = panel
+                if _is_group_info_panel_ready(panel):
+                    return panel
 
-        chat_info_btn = auto.ButtonControl(Name=self.lc.chat_info, searchDepth=25)
-        if not chat_info_btn.Exists(3, 1):
-            raise RuntimeError("未找到 '聊天信息' 按钮")
-        _click(chat_info_btn)
-        time.sleep(0.8)
+            chat_info_btn = win.ButtonControl(Name=self.lc.chat_info, searchDepth=50)
+            if not chat_info_btn.Exists(2, 1):
+                break
+            _click(chat_info_btn)
+            self._log("  -> 已点击聊天信息，等待群信息侧栏")
+            time.sleep(0.8)
 
-        panel = auto.Control(ClassName=MEMBER_INFO_CLS, searchDepth=25)
-        if not panel.Exists(3, 1):
-            raise RuntimeError("未找到群信息侧面板 (ChatRoomMemberInfoView)")
-        return panel
+        if last_panel is not None and last_panel.Exists(0, 0):
+            raise RuntimeError("群信息侧面板存在但未就绪，状态机停止")
+        raise RuntimeError("未找到群信息侧面板 (ChatRoomMemberInfoView)")
 
     def _remove_all_members_from_group(self, panel):
         total_selected = 0
@@ -703,20 +745,34 @@ class GroupManagerThread(QThread):
             auto.WheelDown(waitTime=0.1)
             time.sleep(0.2)
 
-        if exit_btn is None:
-            self._log("  -> 未找到 '退出群聊' 组件，改用群信息侧栏底部位置")
-            _click_group_info_bottom_exit_slot(panel)
-        else:
+        if exit_btn is not None:
             _click(exit_btn)
-        time.sleep(1.0)
-
-        confirm_btn = auto.ButtonControl(Name="确定", searchDepth=10)
-        if confirm_btn.Exists(2, 1):
-            _click(confirm_btn)
             time.sleep(0.5)
-            self._log("  -> 已点击退出确认")
-        else:
-            self._log("  -> 未检测到确认弹窗，可能已退出或需要手动确认")
+            if self._click_exit_confirm_if_present(timeout=2.0):
+                return
+            raise RuntimeError("点击 '退出群聊' 后未出现退出确认弹窗")
+
+        self._log("  -> 未找到 '退出群聊' 组件，改用群信息侧栏底部位置")
+        for offset in (120, 100, 140, 80, 160):
+            _click_group_info_bottom_exit_slot(panel, bottom_offset=offset)
+            time.sleep(0.5)
+            if self._click_exit_confirm_if_present(timeout=1.5):
+                return
+
+        raise RuntimeError("点击 '退出群聊' 后未出现退出确认弹窗")
+
+    def _click_exit_confirm_if_present(self, timeout: float = 2.0) -> bool:
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            for name in EXIT_CONFIRM_NAMES:
+                confirm_btn = auto.ButtonControl(Name=name, searchDepth=10)
+                if confirm_btn.Exists(0, 0):
+                    _click(confirm_btn)
+                    time.sleep(0.5)
+                    self._log("  -> 已点击退出确认")
+                    return True
+            time.sleep(0.2)
+        return False
 
     # ── exit group ───────────────────────────────────────────
 
@@ -752,10 +808,21 @@ class GroupManagerThread(QThread):
         return {"total": total, "success": success, "failed": failed, "stopped": self._stop_requested}
 
     def _exit_one_group(self, group_name: str):
+        self._enter_exit_state(GroupExitState.SEARCH_GROUP, "未搜索前不打开侧栏")
         self._search_contact(group_name)
         time.sleep(0.5)
 
+        self._enter_exit_state(GroupExitState.OPEN_INFO_PANEL, "目标群已选中，等待群信息侧栏就绪")
         panel = self._open_group_info_panel()
+        self._ensure_group_info_panel_ready(panel, GroupExitState.OPEN_INFO_PANEL)
+
+        self._enter_exit_state(GroupExitState.REMOVE_MEMBERS, "侧栏已就绪，开始移出其他成员")
         self._remove_all_members_from_group(panel)
+
+        self._enter_exit_state(GroupExitState.REFRESH_INFO_PANEL, "成员处理结束，重新确认侧栏就绪")
         panel = self._open_group_info_panel()
+        self._ensure_group_info_panel_ready(panel, GroupExitState.REFRESH_INFO_PANEL)
+
+        self._enter_exit_state(GroupExitState.CLICK_EXIT, "只在侧栏就绪后点击退出入口")
         self._exit_current_group_from_panel(panel)
+        self._enter_exit_state(GroupExitState.DONE, "退出确认已处理")

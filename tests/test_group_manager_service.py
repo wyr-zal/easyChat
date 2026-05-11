@@ -142,6 +142,31 @@ class FakePickerAuto:
         return FakeWindowControl(False, "")
 
 
+class FakeWechatWindowForPanel(FakeControl):
+    def __init__(self, panel, chat_info_btn):
+        super().__init__(True)
+        self.panel = panel
+        self.chat_info_btn = chat_info_btn
+        self.chat_info_clicked = False
+        self.control_calls = []
+        self.button_calls = []
+
+    def Control(self, **kwargs):
+        self.control_calls.append(kwargs)
+        if (
+            kwargs.get("ClassName") == service.MEMBER_INFO_CLS
+            and self.chat_info_clicked
+        ):
+            return self.panel
+        return FakePickerSearchControl(False)
+
+    def ButtonControl(self, **kwargs):
+        self.button_calls.append(kwargs)
+        if kwargs.get("Name") == "聊天信息":
+            return self.chat_info_btn
+        return FakePickerSearchControl(False)
+
+
 class ChatMoreMenuLocatorTest(unittest.TestCase):
     def test_prefers_chat_more_entry_menu_container_for_initiate_group(self):
         scoped_item = FakeControl(True)
@@ -414,18 +439,58 @@ class GroupMemberRemoveButtonLocatorTest(unittest.TestCase):
 
 
 class GroupDeleteFlowTest(unittest.TestCase):
+    def _ready_group_panel(self):
+        member_list = FakePickerSearchControl(
+            True,
+            name="聊天成员",
+            control_type="ListControl",
+            automation_id="chat_member_list",
+            class_name="QFReuseGridWidget",
+        )
+        return FakePickerSearchControl(
+            True,
+            control_type="GroupControl",
+            class_name=service.MEMBER_INFO_CLS,
+            children=[member_list],
+        )
+
+    def test_open_group_info_panel_clicks_chat_info_button_scoped_to_wechat_window(self):
+        thread = service.GroupManagerThread(service.GroupManagerThread.MODE_EXIT, [])
+        thread.lc = SimpleNamespace(chat_info="聊天信息")
+        panel = self._ready_group_panel()
+        chat_info_btn = FakePickerSearchControl(
+            True,
+            name="聊天信息",
+            control_type="ButtonControl",
+        )
+        win = FakeWechatWindowForPanel(panel, chat_info_btn)
+        thread._find_wechat = lambda: win
+        clicked = []
+
+        def click(control):
+            clicked.append(control)
+            if control is chat_info_btn:
+                win.chat_info_clicked = True
+
+        with (
+            patch.object(service.auto, "Control", side_effect=AssertionError("不应全局查找侧栏")),
+            patch.object(service.auto, "ButtonControl", side_effect=AssertionError("不应全局查找聊天信息")),
+            patch.object(service, "_click", click),
+            patch.object(service.time, "sleep", lambda _seconds: None),
+        ):
+            result = service.GroupManagerThread._open_group_info_panel(thread)
+
+        self.assertIs(result, panel)
+        self.assertEqual(clicked, [chat_info_btn])
+        self.assertEqual(
+            win.button_calls[0],
+            {"Name": "聊天信息", "searchDepth": 50},
+        )
+
     def test_exit_group_removes_all_members_before_self_exit(self):
         thread = service.GroupManagerThread(service.GroupManagerThread.MODE_EXIT, [])
-        first_panel = FakePickerSearchControl(
-            True,
-            control_type="GroupControl",
-            class_name=service.MEMBER_INFO_CLS,
-        )
-        refreshed_panel = FakePickerSearchControl(
-            True,
-            control_type="GroupControl",
-            class_name=service.MEMBER_INFO_CLS,
-        )
+        first_panel = self._ready_group_panel()
+        refreshed_panel = self._ready_group_panel()
         calls = []
         thread._search_contact = lambda group_name: calls.append(("search", group_name))
         panels = [first_panel, refreshed_panel]
@@ -436,6 +501,7 @@ class GroupDeleteFlowTest(unittest.TestCase):
         thread._exit_current_group_from_panel = lambda current_panel: calls.append(
             ("exit_self", current_panel)
         )
+        thread._log = lambda _msg: None
 
         with patch.object(service.time, "sleep", lambda _seconds: None):
             service.GroupManagerThread._exit_one_group(thread, "项目讨论组")
@@ -641,25 +707,53 @@ class GroupDeleteFlowTest(unittest.TestCase):
             class_name=service.MEMBER_INFO_CLS,
         )
         panel.BoundingRectangle = FakeRect(100, 200, 500, 1000)
-        confirm_btn = FakeControl(False)
+        confirm_btn = FakeControl(True)
         moved = []
         wheel_down_calls = []
         click_points = []
+        clicked = []
         logs = []
         thread._log = logs.append
 
         with (
             patch.object(service, "_move", lambda control: moved.append(control)),
             patch.object(service, "_click_at", lambda x, y: click_points.append((x, y))),
+            patch.object(service, "_click", lambda control: clicked.append(control)),
             patch.object(service.auto, "WheelDown", lambda **_kwargs: wheel_down_calls.append(True)),
             patch.object(service.auto, "ButtonControl", return_value=confirm_btn),
             patch.object(service.time, "sleep", lambda _seconds: None),
         ):
             service.GroupManagerThread._exit_current_group_from_panel(thread, panel)
 
-        self.assertEqual(click_points, [(300, 920)])
+        self.assertEqual(click_points, [(300, 880)])
+        self.assertEqual(clicked, [confirm_btn])
         self.assertEqual(len(wheel_down_calls), 12)
         self.assertTrue(any("侧栏底部位置" in msg for msg in logs))
+
+    def test_exit_current_group_stops_when_anchor_click_does_not_open_confirm_dialog(self):
+        thread = service.GroupManagerThread(service.GroupManagerThread.MODE_EXIT, [])
+        thread.lc = SimpleNamespace(exit_group="退出群聊")
+        panel = FakePickerSearchControl(
+            True,
+            control_type="GroupControl",
+            class_name=service.MEMBER_INFO_CLS,
+        )
+        panel.BoundingRectangle = FakeRect(100, 200, 500, 1000)
+        confirm_btn = FakeControl(False)
+        click_points = []
+        thread._log = lambda _msg: None
+
+        with (
+            patch.object(service, "_move", lambda _control: None),
+            patch.object(service, "_click_at", lambda x, y: click_points.append((x, y))),
+            patch.object(service.auto, "WheelDown", lambda **_kwargs: None),
+            patch.object(service.auto, "ButtonControl", return_value=confirm_btn),
+            patch.object(service.time, "sleep", lambda _seconds: None),
+        ):
+            with self.assertRaisesRegex(RuntimeError, "未出现退出确认"):
+                service.GroupManagerThread._exit_current_group_from_panel(thread, panel)
+
+        self.assertGreaterEqual(len(click_points), 2)
 
 
 class PickerSearchResultClickTest(unittest.TestCase):
