@@ -15,6 +15,7 @@ from PyQt5.QtCore import Qt
 from PyQt5.QtGui import QFont, QTextCursor
 from PyQt5.QtWidgets import (
     QApplication,
+    QCheckBox,
     QFileDialog,
     QGridLayout,
     QGroupBox,
@@ -36,10 +37,18 @@ from PyQt5.QtWidgets import (
 from remark_manager.remark_manager_service import (
     RemarkManagerThread,
     build_remark_tasks,
+    create_remark_result_file,
 )
 
 
-CONFIG_PATH = Path(__file__).with_name("remark_manager_config.json")
+def _default_config_path() -> Path:
+    """Return a writable config path for source runs and PyInstaller exe runs."""
+    if getattr(sys, "frozen", False):
+        return Path(sys.executable).resolve().with_name("remark_manager_config.json")
+    return Path(__file__).resolve().with_name("remark_manager_config.json")
+
+
+CONFIG_PATH = _default_config_path()
 PRIMARY_FONT_SIZE = 13
 HELPER_FONT_SIZE = 12
 TITLE_FONT_SIZE = 26
@@ -74,6 +83,7 @@ class RemarkManagerGUI(QWidget):
         self.config = self._load_config()
         self.tasks: list[dict] = []
         self.thread: RemarkManagerThread | None = None
+        self.result_path: Path | None = None
 
         self.setWindowTitle("EasyChat 备注批量修改")
         self.resize(STARTUP_WIDTH, STARTUP_HEIGHT)
@@ -97,6 +107,7 @@ class RemarkManagerGUI(QWidget):
         config.setdefault("settings", {})
         config["settings"].setdefault("language", "zh-CN")
         config["settings"].setdefault("operation_interval", 2)
+        config["settings"].setdefault("fast_mode", False)
         config.setdefault("import", {})
         config["import"].setdefault("last_excel_path", "")
         config["import"].setdefault("original_column", "原始名")
@@ -216,12 +227,14 @@ class RemarkManagerGUI(QWidget):
         settings_layout.setVerticalSpacing(8)
 
         self.interval_spin = QSpinBox()
-        self.interval_spin.setRange(1, 60)
+        self.interval_spin.setRange(0, 60)
         self.interval_spin.setSuffix(" 秒")
         self.interval_spin.setMinimumHeight(INPUT_MIN_HEIGHT)
         self.language_combo = QComboBox()
         self.language_combo.addItems(["zh-CN", "zh-TW", "en-US"])
         self.language_combo.setMinimumHeight(INPUT_MIN_HEIGHT)
+        self.fast_mode_check = QCheckBox("快速模式")
+        self.fast_mode_check.setToolTip("使用本次运行已学习到的正确位置直接点击三点和头像，跳过侧栏状态机判断。")
         self.start_btn = QPushButton("开始修改")
         self.start_btn.clicked.connect(self._start_tasks)
         self.stop_btn = QPushButton("停止")
@@ -233,8 +246,9 @@ class RemarkManagerGUI(QWidget):
         settings_layout.addWidget(self.interval_spin, 0, 1)
         settings_layout.addWidget(QLabel("微信语言:"), 0, 2)
         settings_layout.addWidget(self.language_combo, 0, 3)
-        settings_layout.addWidget(self.start_btn, 0, 4)
-        settings_layout.addWidget(self.stop_btn, 0, 5)
+        settings_layout.addWidget(self.fast_mode_check, 0, 4)
+        settings_layout.addWidget(self.start_btn, 0, 5)
+        settings_layout.addWidget(self.stop_btn, 0, 6)
         settings_layout.setColumnStretch(6, 1)
         root.addWidget(settings_box)
 
@@ -274,6 +288,7 @@ class RemarkManagerGUI(QWidget):
         index = self.language_combo.findText(language)
         if index >= 0:
             self.language_combo.setCurrentIndex(index)
+        self.fast_mode_check.setChecked(bool(settings.get("fast_mode", False)))
 
     # ── import ──────────────────────────────────────────────
 
@@ -309,6 +324,7 @@ class RemarkManagerGUI(QWidget):
                     raise
 
             self._refresh_table()
+            self.result_path = None
             self.config["import"]["last_excel_path"] = path
             self.config["import"]["original_column"] = source_col
             self.config["import"]["remark_column"] = target_col
@@ -348,19 +364,25 @@ class RemarkManagerGUI(QWidget):
             QMessageBox.warning(self, "无任务", "请先导入数据")
             return
 
-        for task in self.tasks:
-            task["status"] = ""
-            task.pop("error", None)
-        self._refresh_table()
+        try:
+            self.result_path = create_remark_result_file(self.path_input.text().strip())
+        except Exception as exc:
+            QMessageBox.critical(self, "创建结果文件失败", str(exc))
+            return
+
+        self._append_log(f"[结果] 执行状态将写入: {self.result_path}")
 
         self.config["settings"]["operation_interval"] = self.interval_spin.value()
         self.config["settings"]["language"] = self.language_combo.currentText()
+        self.config["settings"]["fast_mode"] = self.fast_mode_check.isChecked()
         self._save_config()
 
         self.thread = RemarkManagerThread(
             tasks=self.tasks,
             locale=self.language_combo.currentText(),
             interval=self.interval_spin.value(),
+            result_path=self.result_path,
+            fast_mode=self.fast_mode_check.isChecked(),
         )
         self.thread.progress.connect(self._on_progress)
         self.thread.log.connect(self._append_log)
@@ -388,11 +410,14 @@ class RemarkManagerGUI(QWidget):
         total = summary.get("total", 0)
         success = summary.get("success", 0)
         failed = summary.get("failed", 0)
+        skipped = summary.get("skipped", 0)
         stopped = "（用户中止）" if summary.get("stopped", False) else ""
         self._append_log(
             f"\n====== 执行完成{stopped} ======\n"
-            f"  总计: {total}  成功: {success}  失败: {failed}\n"
+            f"  总计: {total}  成功: {success}  失败: {failed}  跳过: {skipped}\n"
         )
+        if self.result_path:
+            self._append_log(f"  结果文件: {self.result_path}\n")
 
     def _on_error(self, msg: str):
         self.start_btn.setEnabled(True)

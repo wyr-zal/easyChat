@@ -72,6 +72,38 @@ class RemarkManagerGuiRuntimeTest(unittest.TestCase):
         self.assertEqual(window.width(), 1176)
         self.assertEqual(window.height(), 864)
 
+    def test_interval_spin_allows_zero_seconds(self):
+        window = self.create_window()
+
+        self.assertEqual(window.interval_spin.minimum(), 0)
+        window.interval_spin.setValue(0)
+        self.assertEqual(window.interval_spin.value(), 0)
+
+    def test_fast_mode_checkbox_defaults_to_off(self):
+        window = self.create_window()
+
+        self.assertFalse(window.fast_mode_check.isChecked())
+
+    def test_default_config_path_uses_exe_directory_when_frozen(self):
+        original_executable = gui.sys.executable
+        original_frozen = getattr(gui.sys, "frozen", None)
+        had_frozen_attr = hasattr(gui.sys, "frozen")
+
+        try:
+            gui.sys.frozen = True
+            gui.sys.executable = r"C:\EasyChat\EasyChatRemarkManager.exe"
+
+            self.assertEqual(
+                gui._default_config_path(),
+                Path(r"C:\EasyChat\remark_manager_config.json"),
+            )
+        finally:
+            gui.sys.executable = original_executable
+            if had_frozen_attr:
+                gui.sys.frozen = original_frozen
+            elif hasattr(gui.sys, "frozen"):
+                delattr(gui.sys, "frozen")
+
 
 if __name__ == "__main__":
     unittest.main()
